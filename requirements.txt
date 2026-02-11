@@ -1,0 +1,7 @@
+﻿numpy
+pandas
+matplotlib
+gymnasium
+torch
+tqdm
+pytest
