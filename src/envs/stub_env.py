@@ -7,13 +7,13 @@ from gymnasium import spaces
 from src.common.actions import DEFAULT_ACTION_SPEC, action_to_qty
 
 class StubExecutionEnv(gym.Env):
-    \"\"\"A minimal Gymnasium env for testing the RL pipeline.
+    '''A minimal Gymnasium env for testing the RL pipeline.
 
     Observation:
       [inv_remaining_norm, time_remaining_norm, mid_price_norm, spread_norm, vol_top1_norm, vol_top3_norm]
     Action:
       Discrete index into fractions list.
-    \"\"\"
+    '''
 
     metadata = {"render_modes": []}
 
