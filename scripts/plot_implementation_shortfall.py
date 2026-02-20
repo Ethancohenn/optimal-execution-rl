@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.metrics.metrics import (
+    implementation_shortfall_by_episode,
+    load_episodes,
+    load_trajectories,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Plot implementation shortfall comparison (RL vs TWAP).")
+    parser.add_argument("--rl-run-dir", type=str, required=True, help="RL run directory.")
+    parser.add_argument("--twap-run-dir", type=str, required=True, help="TWAP run directory.")
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="reports/figures/implementation_shortfall.png",
+        help="Output image path.",
+    )
+    parser.add_argument(
+        "--tail-k",
+        type=int,
+        default=None,
+        help="If set, evaluate only the last K episodes from each run.",
+    )
+    return parser.parse_args()
+
+
+def filter_tail(
+    episodes_df: pd.DataFrame, traj_df: pd.DataFrame, tail_k: int | None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if tail_k is None:
+        return episodes_df, traj_df
+    tail_k = max(1, int(tail_k))
+    keep_eps = episodes_df["episode"].astype(int).sort_values().unique()[-tail_k:]
+    episodes_out = episodes_df[episodes_df["episode"].astype(int).isin(keep_eps)].copy()
+    traj_out = traj_df[traj_df["episode"].astype(int).isin(keep_eps)].copy()
+    return episodes_out, traj_out
+
+
+def summarize(episodes_df: pd.DataFrame, traj_df: pd.DataFrame, is_per_ep: pd.Series) -> dict[str, float]:
+    completion = float(episodes_df["completed"].astype(float).mean()) if "completed" in episodes_df.columns else float("nan")
+    forced_share = 0.0
+    if "forced_qty" in traj_df.columns and "executed_qty" in traj_df.columns:
+        total_forced = float(traj_df["forced_qty"].astype(float).sum())
+        total_exec = float(traj_df["executed_qty"].astype(float).sum())
+        forced_share = (total_forced / total_exec) if total_exec > 0 else 0.0
+    return {
+        "mean_is": float(is_per_ep.mean()),
+        "p95_is": float(is_per_ep.quantile(0.95)),
+        "completion_rate": completion,
+        "forced_liq_share": forced_share,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    rl_eps = load_episodes(args.rl_run_dir)
+    twap_eps = load_episodes(args.twap_run_dir)
+    rl_traj = load_trajectories(args.rl_run_dir)
+    twap_traj = load_trajectories(args.twap_run_dir)
+
+    rl_eps, rl_traj = filter_tail(rl_eps, rl_traj, args.tail_k)
+    twap_eps, twap_traj = filter_tail(twap_eps, twap_traj, args.tail_k)
+
+    rl_is = implementation_shortfall_by_episode(rl_traj)
+    twap_is = implementation_shortfall_by_episode(twap_traj)
+
+    out_path = Path(args.out)
+    os.makedirs(out_path.parent, exist_ok=True)
+
+    plt.figure(figsize=(7.5, 4.5))
+    plt.boxplot([rl_is.values, twap_is.values], tick_labels=["RL", "TWAP"], showmeans=True)
+    plt.ylabel("Implementation shortfall")
+    plt.title("Implementation Shortfall: RL vs TWAP")
+    plt.grid(axis="y", alpha=0.2)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved figure to: {out_path}")
+
+    rl_summary = summarize(rl_eps, rl_traj, rl_is)
+    twap_summary = summarize(twap_eps, twap_traj, twap_is)
+    summary = pd.DataFrame(
+        {
+            "strategy": ["RL", "TWAP"],
+            "mean_is": [rl_summary["mean_is"], twap_summary["mean_is"]],
+            "p95_is": [rl_summary["p95_is"], twap_summary["p95_is"]],
+            "completion_rate": [rl_summary["completion_rate"], twap_summary["completion_rate"]],
+            "forced_liq_share": [
+                rl_summary.get("forced_liq_share", 0.0),
+                twap_summary.get("forced_liq_share", 0.0),
+            ],
+        }
+    )
+    print(summary.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
