@@ -208,14 +208,16 @@ $$P_t = P_{\text{mid}} \cdot \big(1 - \eta \cdot q_t - \gamma \cdot \text{Cumula
 - $\eta$ = temporary impact (default `2.5e-6`)
 - $\gamma$ = permanent impact (default `2.5e-7`)
 
-### Reward
+### Reward Function
+
+The agent's objective is to minimize execution slippage relative to the benchmark price. At each step $t$, the reward is calculated as:
 
 $$r_t = -(P_{\text{exec}} - P_{\text{benchmark}}) \cdot q_t$$
 
-At terminal step with leftover inventory:
-
-$$r_T \mathrel{-}= \lambda \cdot \text{inventory\_remaining} \cdot P_{\text{benchmark}}$$
-
+Where:
+* $P_{\text{exec}}$: The price at which the shares were filled.
+* $P_{\text{benchmark}}$: The target reference price (e.g., Arrival Price or VWAP).
+* $q_t$ : The quantity traded at step $t$.
 ---
 
 ## 5 · Implementing a DQN Agent
