@@ -32,9 +32,10 @@ ABIDES requires **Python 3.6**. We use it solely to generate realistic LOB simul
 brew install --cask miniconda
 conda init zsh   # or conda init bash
 
-# 2. Create the ABIDES environment
-conda create -n abides_sim python=3.6 -y
+# 2. Create the ABIDES environment(if you are on Apple Silicon Mac)
+CONDA_SUBDIR=osx-64 conda create -n abides_sim python=3.6 -y
 conda activate abides_sim
+conda config --env --set subdir osx-64
 
 # 3. Install dependencies
 cd abides
