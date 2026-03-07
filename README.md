@@ -15,7 +15,12 @@ optimal-execution-rl/
 │   ├── config.py      ← Centralised hyperparameters (EnvConfig)
 │   ├── market_sim.py  ← Lightweight LOB simulator with market impact
 │   ├── execution_env.py ← gymnasium.Env wrapper
+│   ├── feature_extraction/  ← ABIDES log → training features pipeline
+│   │   ├── parsers.py       ← bz2 log readers (exchange, fundamental, exec agent)
+│   │   ├── features.py      ← Feature engineering (orderbook, trade, derived)
+│   │   └── pipeline.py      ← End-to-end orchestrator + CLI
 │   └── README.md      ← How to build RL agents on this env
+├── data/              ← Extracted feature files (.npz)
 └── README.md          ← This file
 ```
 
@@ -32,9 +37,10 @@ ABIDES requires **Python 3.6**. We use it solely to generate realistic LOB simul
 brew install --cask miniconda
 conda init zsh   # or conda init bash
 
-# 2. Create the ABIDES environment
-conda create -n abides_sim python=3.6 -y
+# 2. Create the ABIDES environment(if you are on Apple Silicon Mac)
+CONDA_SUBDIR=osx-64 conda create -n abides_sim python=3.6 -y
 conda activate abides_sim
+conda config --env --set subdir osx-64
 
 # 3. Install dependencies
 cd abides
@@ -178,7 +184,65 @@ You can swap the execution agent in `config/execution.py` (TWAP, VWAP, or POV ar
 
 ---
 
-## 4 · Key Concepts
+## 4 · Feature Extraction Pipeline
+
+The feature extraction pipeline converts raw ABIDES `.bz2` log files into a training-ready `.npz` dataset. It parses the exchange event stream (best bid/ask updates, executed trades), the oracle fundamental value series, and any execution agent logs, then computes 17 market microstructure features — including mid-price, spread, order book imbalance, traded volume, trade intensity, rolling volatility, VWAP, and benchmark price — all resampled onto a uniform 1-second time grid.
+
+### CLI Usage
+
+```bash
+conda activate cs234_rl
+
+python3 -m execution_infra.feature_extraction.pipeline \
+    --log-dir abides/log/my_sim_run \
+    --symbol IBM \
+    --freq 1s \
+    --output data/features.npz
+```
+
+### Python Usage
+
+```python
+from execution_infra.feature_extraction import extract_features
+
+# Returns a DataFrame and a dict of numpy arrays
+df, arrays = extract_features("abides/log/my_sim_run")
+
+# Or save directly to .npz
+df, arrays = extract_features("abides/log/my_sim_run", output_path="data/features.npz")
+
+# Load later
+import numpy as np
+data = np.load("data/features.npz")
+X = data["features"]          # shape (7200, 17), float32
+names = data["feature_names"]  # array of 17 column name strings
+```
+
+### Output Features (17 columns)
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 1 | `best_bid` | Exchange | Best bid price ($) |
+| 2 | `best_ask` | Exchange | Best ask price ($) |
+| 3 | `mid_price` | Exchange | (bid + ask) / 2 |
+| 4 | `spread` | Exchange | ask − bid ($) |
+| 5 | `bid_vol_1` | Exchange | Volume at best bid |
+| 6 | `ask_vol_1` | Exchange | Volume at best ask |
+| 7 | `order_book_imbalance` | Exchange | bid_vol / (bid + ask) |
+| 8 | `last_trade_price` | Exchange | Most recent fill price ($) |
+| 9 | `traded_volume` | Exchange | Shares traded per second |
+| 10 | `trade_intensity` | Exchange | Number of trades per second |
+| 11 | `remaining_inventory` | Exec Agent | Shares left to sell |
+| 12 | `executed_volume` | Exec Agent | Cumulative shares sold |
+| 13 | `last_execution_price` | Exec Agent | Last fill price ($) |
+| 14 | `time_remaining` | Derived | 1.0 → 0.0 over trading session |
+| 15 | `volatility` | Derived | Rolling std of mid-price log-returns |
+| 16 | `vwap` | Derived | Cumulative VWAP |
+| 17 | `benchmark_price` | Fundamental | Oracle fundamental value ($) |
+
+---
+
+## 5 · Key Concepts
 
 ### State Space ($s_t$)
 
@@ -220,15 +284,10 @@ Where:
 * $q_t$ : The quantity traded at step $t$.
 ---
 
-## 5 · Implementing a DQN Agent
+## 6 · Implementing a DQN Agent
 
 Create a file (e.g. `agents/dqn.py`) with the following structure. The environment is already gymnasium-compatible, so the training loop is standard
 
 ## Team
 Mingyang Li, Haotian Cui, Ethan Cohen
 CS234 — Reinforcement Learning, Stanford University
-
-### Which env to use?
-
-- Use `CS234Proj` when running ABIDES simulations from `abides/`.
-- Use `exec-rl` for RL code, tests, baselines, metrics, and plots in the root project.
