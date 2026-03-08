@@ -3,6 +3,9 @@ Centralized configuration for the Optimal Execution environment.
 
 All tunable hyperparameters live here so agents and experiments
 can import a single EnvConfig object (or override fields via kwargs).
+
+Set ``use_abides_replay=True`` (and point ``npz_path`` at a features.npz)
+to swap the synthetic MarketSimulator for real ABIDES replay data.
 """
 
 from dataclasses import dataclass, field
@@ -40,6 +43,10 @@ class EnvConfig:
 
     # ── Random seed ───────────────────────────────────────────────
     seed: int | None = None            # Reproducibility (None → random)
+
+    # ── ABIDES replay ────────────────────────────────────────────
+    use_abides_replay: bool = False    # If True, use AbidesReplayEnv instead
+    npz_path: str = "data/features.npz"  # Path to features.npz
 
     # ── Derived helpers ───────────────────────────────────────────
     @property
