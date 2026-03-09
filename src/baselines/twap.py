@@ -104,12 +104,14 @@ def run_twap(args: argparse.Namespace) -> str:
 
             remaining = float(info.get("remaining_inventory", info.get("inventory_remaining", 0.0)))
             t_val = int(info.get("t", info.get("step", step_idx)))
+            timestamp_ns = int(info.get("timestamp_ns", -1))
 
             logger.log_step(
                 {
                     "episode": episode,
                     "step": step_idx,
                     "t": t_val,
+                    "timestamp_ns": timestamp_ns,
                     "remaining_inventory": remaining,
                     "action": int(action),
                     "exec_price": exec_price,

@@ -54,7 +54,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--replay-capacity", type=int, default=100_000)
     parser.add_argument("--warmup-steps", type=int, default=1_000)
-    parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN target computation (default off).")
+    parser.add_argument(
+        "--algorithm",
+        type=str,
+        default="dqn",
+        choices=["dqn", "double_dqn"],
+        help="Training algorithm. Use 'double_dqn' for Double DQN targets.",
+    )
+    parser.add_argument(
+        "--double-dqn",
+        action="store_true",
+        help="Alias for --algorithm double_dqn.",
+    )
     parser.add_argument("--smoothness-coef", type=float, default=0.01)
     parser.add_argument("--target-update-interval", type=int, default=50)
     parser.add_argument("--tau", type=float, default=0.05)
@@ -74,9 +85,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
+def resolve_algorithm(args: argparse.Namespace) -> tuple[str, bool]:
+    use_double_dqn = bool(args.double_dqn or args.algorithm == "double_dqn")
+    algo_name = "double_dqn" if use_double_dqn else "dqn"
+    return algo_name, use_double_dqn
+
+
+def build_run_dir(
+    base_dir: str,
+    run_name: str | None,
+    overwrite: bool,
+    default_prefix: str,
+) -> str:
     if run_name is None:
-        run_name = datetime.now().strftime("dqn_exec_%Y%m%d_%H%M%S")
+        run_name = datetime.now().strftime(f"{default_prefix}_%Y%m%d_%H%M%S")
     run_dir = os.path.join(base_dir, run_name)
     if os.path.exists(run_dir):
         if overwrite:
@@ -105,6 +127,8 @@ def set_global_seed(seed: int) -> None:
 
 def train(args: argparse.Namespace) -> str:
     set_global_seed(args.seed)
+    algo_name, use_double_dqn = resolve_algorithm(args)
+    print(f"[train_dqn] Algorithm={algo_name} (double_dqn={use_double_dqn})")
 
     # ── Build environment ─────────────────────────────────────────
     if args.use_abides:
@@ -157,12 +181,18 @@ def train(args: argparse.Namespace) -> str:
         batch_size=args.batch_size,
         replay_capacity=args.replay_capacity,
         warmup_steps=args.warmup_steps,
-        double_dqn=args.double_dqn,
+        double_dqn=use_double_dqn,
         smoothness_coef=args.smoothness_coef,
         target_update_interval=args.target_update_interval,
         tau=args.tau,
     )
-    run_dir = build_run_dir(args.base_run_dir, args.run_name, overwrite=args.overwrite)
+    run_prefix = "ddqn_exec" if use_double_dqn else "dqn_exec"
+    run_dir = build_run_dir(
+        args.base_run_dir,
+        args.run_name,
+        overwrite=args.overwrite,
+        default_prefix=run_prefix,
+    )
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
     for episode in trange(args.episodes, desc="train"):
@@ -176,7 +206,6 @@ def train(args: argparse.Namespace) -> str:
         step_idx = 0
 
         while not done:
-            inventory_before = int(info["inventory_remaining"])
             action = agent.select_action(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
@@ -193,12 +222,14 @@ def train(args: argparse.Namespace) -> str:
 
             exec_price = float(info.get("exec_price", float("nan")))
             mid_price = float(info.get("mid_price", float("nan")))
+            timestamp_ns = int(info.get("timestamp_ns", -1))
 
             logger.log_step(
                 {
                     "episode": episode,
                     "step": step_idx,
                     "t": int(info["step"]),
+                    "timestamp_ns": timestamp_ns,
                     "remaining_inventory": float(info["inventory_remaining"]),
                     "action": int(action),
                     "exec_price": exec_price,
@@ -226,7 +257,7 @@ def train(args: argparse.Namespace) -> str:
                 "mean_loss": float(ep_loss / max(1, loss_count)),
                 "epsilon": float(agent.epsilon()),
                 "steps": step_idx,
-                "strategy": "dqn",
+                "strategy": algo_name,
                 "is_twap": 0,
             }
         )
@@ -241,5 +272,7 @@ def train(args: argparse.Namespace) -> str:
 
 
 if __name__ == "__main__":
-    run_path = train(parse_args())
-    print(f"Saved DQN artifacts to: {run_path}")
+    args = parse_args()
+    algo_name, _ = resolve_algorithm(args)
+    run_path = train(args)
+    print(f"Saved {algo_name} artifacts to: {run_path}")

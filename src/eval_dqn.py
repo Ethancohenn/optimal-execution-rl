@@ -44,7 +44,13 @@ def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
     run_dir = os.path.join(base_dir, run_name)
     if os.path.exists(run_dir):
         if overwrite:
-            shutil.rmtree(run_dir)
+            try:
+                shutil.rmtree(run_dir)
+            except PermissionError as exc:
+                raise PermissionError(
+                    f"Cannot overwrite run directory '{run_dir}'. "
+                    "Close files under this folder (editor/Explorer) or use a different --run-name."
+                ) from exc
         else:
             raise ValueError(f"Run dir exists: {run_dir}. Use --overwrite.")
     return run_dir
@@ -126,6 +132,7 @@ def main() -> None:
             executed_qty = float(info.get("executed_qty", 0))
             exec_price   = float(info.get("exec_price",   float("nan")))
             mid_price    = float(info.get("mid_price",    float("nan")))
+            timestamp_ns = int(info.get("timestamp_ns", -1))
             step_is      = executed_qty * (mid_price - exec_price) if executed_qty > 0 else 0.0
 
             ep_reward += float(reward)
@@ -135,6 +142,7 @@ def main() -> None:
                 "episode":              episode,
                 "step":                 step_idx,
                 "t":                    int(info["step"]),
+                "timestamp_ns":         timestamp_ns,
                 "remaining_inventory":  float(info["inventory_remaining"]),
                 "action":               int(action),
                 "exec_price":           exec_price,

@@ -1,19 +1,20 @@
 """
-Side-by-side strategy comparison plots: DQN vs TWAP.
+Side-by-side strategy comparison plots: DQN vs one baseline.
 
 Generates a single figure with 4 panels:
-  1. Episode IS boxplot        (lower = better)
-  2. Episode reward boxplot    (higher = better)
-  3. Avg exec slippage/step    (exec_price - mid_price per step, lower magnitude = better)
-  4. Completion rate bar       (higher = better)
+  1. Episode IS boxplot
+  2. Episode reward boxplot
+  3. Avg exec slippage/step boxplot
+  4. Completion rate bar chart
 
 Usage
 -----
   conda run -n cs234_rl python scripts/plot_comparison.py \\
-      --rl-run-dir   runs/dqn_abides_final \\
-      --twap-run-dir runs/twap_abides_final \\
-      --eval-last    400 \\
-      --out          reports/figures/comparison.png
+      --rl-run-dir runs/dqn_abides_final \\
+      --baseline-run-dir runs/immediate_abides_final \\
+      --baseline-label Immediate \\
+      --eval-last 400 \\
+      --out reports/figures/comparison_immediate.png
 """
 from __future__ import annotations
 
@@ -23,7 +24,6 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 
@@ -33,18 +33,20 @@ if str(ROOT) not in sys.path:
 
 from src.metrics.metrics import load_episodes, load_trajectories
 
-DQN_COLOR  = "#3A86FF"
-TWAP_COLOR = "#FF6B6B"
+DQN_COLOR = "#3A86FF"
+BASELINE_COLOR = "#FF6B6B"
 
-plt.rcParams.update({
-    "figure.dpi": 150,
-    "font.family": "sans-serif",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.alpha": 0.3,
-    "grid.linestyle": "--",
-})
+plt.rcParams.update(
+    {
+        "figure.dpi": 150,
+        "font.family": "sans-serif",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.alpha": 0.3,
+        "grid.linestyle": "--",
+    }
+)
 
 
 def _tail(df: pd.DataFrame, k: int) -> pd.DataFrame:
@@ -53,16 +55,24 @@ def _tail(df: pd.DataFrame, k: int) -> pd.DataFrame:
     return df[df["episode"].isin(keep)]
 
 
-def _boxplot_panel(ax, data_dqn, data_twap, ylabel, title, lower_is_better=True):
+def _boxplot_panel(
+    ax: plt.Axes,
+    data_rl: np.ndarray,
+    data_baseline: np.ndarray,
+    baseline_label: str,
+    ylabel: str,
+    title: str,
+    lower_is_better: bool = True,
+) -> None:
     bp = ax.boxplot(
-        [data_dqn, data_twap],
+        [data_rl, data_baseline],
         patch_artist=True,
         showmeans=True,
         widths=0.45,
         meanprops=dict(marker="D", markerfacecolor="white", markeredgecolor="black", markersize=6),
         medianprops=dict(color="black", linewidth=1.5),
     )
-    for patch, color in zip(bp["boxes"], [DQN_COLOR, TWAP_COLOR]):
+    for patch, color in zip(bp["boxes"], [DQN_COLOR, BASELINE_COLOR]):
         patch.set_facecolor(color)
         patch.set_alpha(0.75)
     for element in ["whiskers", "caps", "fliers"]:
@@ -70,94 +80,123 @@ def _boxplot_panel(ax, data_dqn, data_twap, ylabel, title, lower_is_better=True)
             item.set_color("grey")
 
     ax.set_xticks([1, 2])
-    ax.set_xticklabels(["DQN", "TWAP"], fontsize=11)
+    ax.set_xticklabels(["DQN", baseline_label], fontsize=11)
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(title, fontsize=11, fontweight="bold")
 
-    # Annotate means
-    dqn_mean = np.mean(data_dqn)
-    twap_mean = np.mean(data_twap)
-    ax.text(1, ax.get_ylim()[0], f"μ={dqn_mean:.1f}", ha="center", va="bottom",
-            fontsize=8, color=DQN_COLOR)
-    ax.text(2, ax.get_ylim()[0], f"μ={twap_mean:.1f}", ha="center", va="bottom",
-            fontsize=8, color=TWAP_COLOR)
+    rl_mean = float(np.mean(data_rl))
+    baseline_mean = float(np.mean(data_baseline))
+    ax.text(1, ax.get_ylim()[0], f"mu={rl_mean:.1f}", ha="center", va="bottom", fontsize=8, color=DQN_COLOR)
+    ax.text(
+        2,
+        ax.get_ylim()[0],
+        f"mu={baseline_mean:.1f}",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+        color=BASELINE_COLOR,
+    )
 
-    # Winner arrow
     if lower_is_better:
-        winner = 1 if dqn_mean < twap_mean else 2
+        winner = 1 if rl_mean < baseline_mean else 2
     else:
-        winner = 1 if dqn_mean > twap_mean else 2
-    ax.annotate("★ better", xy=(winner, ax.get_ylim()[1]),
-                ha="center", va="top", fontsize=8, color="green", fontweight="bold")
+        winner = 1 if rl_mean > baseline_mean else 2
+    ax.annotate("better", xy=(winner, ax.get_ylim()[1]), ha="center", va="top", fontsize=8, color="green")
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--rl-run-dir",   required=True)
-    p.add_argument("--twap-run-dir", required=True)
-    p.add_argument("--out",      default="reports/figures/comparison.png")
-    p.add_argument("--eval-last", type=int, default=400,
-                   help="Use last N DQN episodes as eval set")
+    p.add_argument("--rl-run-dir", required=True)
+    p.add_argument("--baseline-run-dir", default=None)
+    p.add_argument("--twap-run-dir", default=None, help="Backward-compatible alias for --baseline-run-dir")
+    p.add_argument("--baseline-label", default="Baseline")
+    p.add_argument("--out", default="reports/figures/comparison.png")
+    p.add_argument("--eval-last", type=int, default=400, help="Use last N DQN episodes as eval set")
     args = p.parse_args()
 
-    dqn_ep    = load_episodes(args.rl_run_dir)
-    twap_ep   = load_episodes(args.twap_run_dir)
-    dqn_traj  = load_trajectories(args.rl_run_dir)
-    twap_traj = load_trajectories(args.twap_run_dir)
+    baseline_run_dir = args.baseline_run_dir or args.twap_run_dir
+    if baseline_run_dir is None:
+        raise ValueError("Provide --baseline-run-dir (or legacy --twap-run-dir).")
 
-    # Filter DQN to eval episodes
-    dqn_ep_eval   = _tail(dqn_ep,   args.eval_last)
-    dqn_traj_eval = _tail(dqn_traj, args.eval_last)
+    rl_ep = load_episodes(args.rl_run_dir)
+    baseline_ep = load_episodes(baseline_run_dir)
+    rl_traj = load_trajectories(args.rl_run_dir)
+    baseline_traj = load_trajectories(baseline_run_dir)
 
-    # ── Panel data ────────────────────────────────────────────────
-    dqn_is     = dqn_ep_eval["episode_is"].values
-    twap_is    = twap_ep["episode_is"].values
-    dqn_reward = dqn_ep_eval["episode_reward"].values
-    twap_reward= twap_ep["episode_reward"].values
+    rl_ep_eval = _tail(rl_ep, args.eval_last)
+    rl_traj_eval = _tail(rl_traj, args.eval_last)
 
-    # Avg step slippage: exec_price - mid_price  (selling → want exec high → close to mid)
-    dqn_slip  = (dqn_traj_eval["exec_price"]  - dqn_traj_eval["mid_price"]).dropna().values
-    twap_slip = (twap_traj["exec_price"] - twap_traj["mid_price"]).dropna().values
+    rl_is = rl_ep_eval["episode_is"].values
+    baseline_is = baseline_ep["episode_is"].values
+    rl_reward = rl_ep_eval["episode_reward"].values
+    baseline_reward = baseline_ep["episode_reward"].values
 
-    # Completion rate
-    dqn_comp  = float(dqn_ep_eval["completed"].mean())  if "completed" in dqn_ep_eval.columns  else float("nan")
-    twap_comp = float(twap_ep["completed"].mean())       if "completed" in twap_ep.columns       else float("nan")
+    rl_slip = (rl_traj_eval["exec_price"] - rl_traj_eval["mid_price"]).dropna().values
+    baseline_slip = (baseline_traj["exec_price"] - baseline_traj["mid_price"]).dropna().values
 
-    # ── Figure ───────────────────────────────────────────────────
+    rl_comp = float(rl_ep_eval["completed"].mean()) if "completed" in rl_ep_eval.columns else float("nan")
+    baseline_comp = (
+        float(baseline_ep["completed"].mean()) if "completed" in baseline_ep.columns else float("nan")
+    )
+
     fig, axes = plt.subplots(1, 4, figsize=(16, 5))
-    fig.suptitle(f"DQN vs TWAP — Strategy Comparison  (DQN eval: last {args.eval_last} episodes)",
-                 fontsize=13, fontweight="bold", y=1.01)
+    fig.suptitle(
+        f"DQN vs {args.baseline_label} - Strategy Comparison (DQN eval: last {args.eval_last} episodes)",
+        fontsize=13,
+        fontweight="bold",
+        y=1.01,
+    )
 
-    # 1. IS
-    _boxplot_panel(axes[0], dqn_is, twap_is,
-                   "Implementation Shortfall", "IS per Episode\n(lower = better)",
-                   lower_is_better=True)
+    _boxplot_panel(
+        axes[0],
+        rl_is,
+        baseline_is,
+        args.baseline_label,
+        "Implementation Shortfall",
+        "IS per Episode (lower is better)",
+        lower_is_better=True,
+    )
+    _boxplot_panel(
+        axes[1],
+        rl_reward,
+        baseline_reward,
+        args.baseline_label,
+        "Episode Reward",
+        "Episode Reward (higher is better)",
+        lower_is_better=False,
+    )
+    _boxplot_panel(
+        axes[2],
+        rl_slip,
+        baseline_slip,
+        args.baseline_label,
+        "exec - mid price ($)",
+        "Execution Slippage / Step (closer to 0 is better)",
+        lower_is_better=True,
+    )
 
-    # 2. Reward
-    _boxplot_panel(axes[1], dqn_reward, twap_reward,
-                   "Episode Reward", "Episode Reward\n(higher = better)",
-                   lower_is_better=False)
-
-    # 3. Slippage per step
-    _boxplot_panel(axes[2], dqn_slip, twap_slip,
-                   "exec − mid price ($)", "Execution Slippage / Step\n(closer to 0 = better)",
-                   lower_is_better=True)
-
-    # 4. Completion rate (bar)
     ax4 = axes[3]
-    bars = ax4.bar(["DQN", "TWAP"], [dqn_comp * 100, twap_comp * 100],
-                   color=[DQN_COLOR, TWAP_COLOR], alpha=0.8, width=0.45)
-    for bar, val in zip(bars, [dqn_comp, twap_comp]):
-        ax4.text(bar.get_x() + bar.get_width() / 2,
-                 bar.get_height() + 1,
-                 f"{val:.1%}", ha="center", fontsize=11, fontweight="bold")
-    winner_label = "DQN" if dqn_comp >= twap_comp else "TWAP"
+    bars = ax4.bar(
+        ["DQN", args.baseline_label],
+        [rl_comp * 100, baseline_comp * 100],
+        color=[DQN_COLOR, BASELINE_COLOR],
+        alpha=0.8,
+        width=0.45,
+    )
+    for bar, val in zip(bars, [rl_comp, baseline_comp]):
+        ax4.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 1,
+            f"{val:.1%}",
+            ha="center",
+            fontsize=11,
+            fontweight="bold",
+        )
+    winner_label = "DQN" if rl_comp >= baseline_comp else args.baseline_label
     winner_x = 0.25 if winner_label == "DQN" else 0.75
-    ax4.text(winner_x, 0.97, "★ better",
-             ha="center", va="top", transform=ax4.transAxes,
-             color="green", fontsize=9, fontweight="bold")
+    ax4.text(winner_x, 0.97, "better", ha="center", va="top", transform=ax4.transAxes, color="green", fontsize=9)
     ax4.set_ylabel("Completion Rate (%)", fontsize=10)
-    ax4.set_title("Liquidation Completion\n(higher = better)", fontsize=11, fontweight="bold")
+    ax4.set_title("Liquidation Completion (higher is better)", fontsize=11, fontweight="bold")
     ax4.set_ylim(0, 115)
     ax4.grid(axis="x", alpha=0)
 
@@ -167,24 +206,23 @@ def main() -> None:
     plt.close(fig)
     print(f"Saved figure to: {args.out}")
 
-    # Print summary table
-    print("\n── Summary ──────────────────────────────────────────")
-    print(f"{'Metric':<30} {'DQN':>12} {'TWAP':>12} {'Winner':>8}")
-    print("-" * 65)
+    print("\nSummary")
+    print(f"{'Metric':<30} {'DQN':>12} {args.baseline_label:>12} {'Winner':>12}")
+    print("-" * 72)
     rows = [
-        ("Mean IS",         np.mean(dqn_is),     np.mean(twap_is),    "lower"),
-        ("Mean Reward",     np.mean(dqn_reward),  np.mean(twap_reward), "higher"),
-        ("Mean Slippage",   np.mean(dqn_slip),    np.mean(twap_slip),  "lower|abs"),
-        ("Completion Rate", dqn_comp,             twap_comp,           "higher"),
+        ("Mean IS", float(np.mean(rl_is)), float(np.mean(baseline_is)), "lower"),
+        ("Mean Reward", float(np.mean(rl_reward)), float(np.mean(baseline_reward)), "higher"),
+        ("Mean Slippage", float(np.mean(rl_slip)), float(np.mean(baseline_slip)), "lower_abs"),
+        ("Completion Rate", rl_comp, baseline_comp, "higher"),
     ]
-    for name, dv, tv, prefer in rows:
+    for name, rv, bv, prefer in rows:
         if prefer == "lower":
-            winner = "DQN ✓" if dv < tv else "TWAP ✓"
+            winner = "DQN" if rv < bv else args.baseline_label
         elif prefer == "higher":
-            winner = "DQN ✓" if dv > tv else "TWAP ✓"
+            winner = "DQN" if rv > bv else args.baseline_label
         else:
-            winner = "DQN ✓" if abs(dv) < abs(tv) else "TWAP ✓"
-        print(f"{name:<30} {dv:>12.3f} {tv:>12.3f} {winner:>8}")
+            winner = "DQN" if abs(rv) < abs(bv) else args.baseline_label
+        print(f"{name:<30} {rv:>12.3f} {bv:>12.3f} {winner:>12}")
 
 
 if __name__ == "__main__":

@@ -105,18 +105,33 @@ class AbidesReplayEnv(gym.Env):
         npz = np.load(str(npz_path))
         self._features: np.ndarray = npz["features"].astype(np.float32)  # (T, F)
         self._col_names: list[str] = list(npz["feature_names"])
+        raw_ts_ns: np.ndarray | None = None
+        if "timestamps_ns" in npz.files:
+            raw_ts_ns = npz["timestamps_ns"].astype(np.int64)
+        elif "timestamps" in npz.files:
+            try:
+                raw_ts_ns = np.array(npz["timestamps"], dtype="datetime64[ns]").astype(np.int64)
+            except Exception:
+                raw_ts_ns = None
         
         # ── Train/Test Split (80/20) ──────────────────────────────
         T_full = self._features.shape[0]
         split_idx = int(T_full * 0.8)
         if split == "train":
             self._features = self._features[:split_idx]
+            if raw_ts_ns is not None and len(raw_ts_ns) == T_full:
+                raw_ts_ns = raw_ts_ns[:split_idx]
         elif split == "test":
             self._features = self._features[split_idx:]
+            if raw_ts_ns is not None and len(raw_ts_ns) == T_full:
+                raw_ts_ns = raw_ts_ns[split_idx:]
         elif split != "all":
             raise ValueError(f"Invalid split: {split}. Use 'train', 'test', or 'all'.")
 
         T, F = self._features.shape
+        self._timestamps_ns: np.ndarray | None = None
+        if raw_ts_ns is not None and len(raw_ts_ns) == T:
+            self._timestamps_ns = raw_ts_ns
 
         if T < self.n_steps + 1:
             raise ValueError(
@@ -164,6 +179,8 @@ class AbidesReplayEnv(gym.Env):
         self._inventory: int = 0
         self._benchmark_price: float = 0.0
         self._cumulative_volume: float = 0.0
+        self._episode_start_ts_ns: int | None = None
+        self._episode_end_ts_ns: int | None = None
         self.trades: list[dict] = []
 
         self._rng = np.random.default_rng(None)
@@ -187,6 +204,12 @@ class AbidesReplayEnv(gym.Env):
         self._inventory = self.total_inventory
         self._cumulative_volume = 0.0
         self.trades = []
+        if self._timestamps_ns is not None:
+            self._episode_start_ts_ns = int(self._timestamps_ns[self._start])
+            self._episode_end_ts_ns = int(self._timestamps_ns[self._start + self.n_steps - 1])
+        else:
+            self._episode_start_ts_ns = None
+            self._episode_end_ts_ns = None
 
         # Benchmark = mid-price at first row of the window (arrival price)
         self._benchmark_price = float(self._row(0)["mid_price"])
@@ -215,7 +238,7 @@ class AbidesReplayEnv(gym.Env):
         reward = (exec_price - self._benchmark_price) * quantity
 
         # Urgency shaping: penalise holding inventory near deadline.
-        time_pressure = self._step / self.n_steps
+        time_pressure = self._time_pressure()
         inv_fraction  = self._inventory / self.total_inventory
         reward -= self.urgency_coef * time_pressure * inv_fraction
 
@@ -269,7 +292,7 @@ class AbidesReplayEnv(gym.Env):
         reward = (exec_price - self._benchmark_price) * quantity
 
         # Urgency shaping: penalise holding inventory near deadline.
-        time_pressure = self._step / self.n_steps
+        time_pressure = self._time_pressure()
         inv_fraction  = self._inventory / self.total_inventory
         reward -= self.urgency_coef * time_pressure * inv_fraction
 
@@ -325,7 +348,7 @@ class AbidesReplayEnv(gym.Env):
         row = self._row(offset)
 
         inv_norm = self._inventory / self.total_inventory
-        time_norm = 1.0 - self._step / self.n_steps
+        time_norm = self._time_norm(offset)
         mid_norm = row["mid_price"] / max(self._benchmark_price, 1e-8)
         # Clip spread and volume to prevent wild out-of-distribution 
         # observations during test evaluation causing the Q-network to break.
@@ -344,7 +367,7 @@ class AbidesReplayEnv(gym.Env):
         mid_price: float = float("nan"),
         executed_qty: int = 0,
     ) -> dict:
-        return {
+        info = {
             "inventory_remaining": self._inventory,
             "shares_sold": self.total_inventory - self._inventory,
             "step": self._step,
@@ -354,3 +377,31 @@ class AbidesReplayEnv(gym.Env):
             "benchmark_price": self._benchmark_price,
             "completion_rate": (self.total_inventory - self._inventory) / self.total_inventory,
         }
+        ts_ns = self._current_timestamp_ns()
+        if ts_ns is not None:
+            info["timestamp_ns"] = ts_ns
+        return info
+
+    def _time_norm(self, offset: int) -> float:
+        if (
+            self._timestamps_ns is None
+            or self._episode_start_ts_ns is None
+            or self._episode_end_ts_ns is None
+        ):
+            return 1.0 - self._step / self.n_steps
+
+        row_idx = self._start + offset
+        now_ns = int(self._timestamps_ns[row_idx])
+        span = max(1, self._episode_end_ts_ns - self._episode_start_ts_ns)
+        remaining = self._episode_end_ts_ns - now_ns
+        return float(np.clip(remaining / span, 0.0, 1.0))
+
+    def _time_pressure(self) -> float:
+        offset = min(self._step, self.n_steps - 1)
+        return 1.0 - self._time_norm(offset)
+
+    def _current_timestamp_ns(self) -> int | None:
+        if self._timestamps_ns is None:
+            return None
+        offset = min(self._step, self.n_steps - 1)
+        return int(self._timestamps_ns[self._start + offset])

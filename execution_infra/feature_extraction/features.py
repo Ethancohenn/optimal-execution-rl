@@ -70,7 +70,7 @@ def compute_orderbook_features(bba_df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_exchange_features(
     trade_df: pd.DataFrame,
-    resample_freq: str = "1s",
+    resample_freq: str | None = "1s",
 ) -> pd.DataFrame:
     """Aggregate trade-level data into per-interval features.
 
@@ -79,8 +79,9 @@ def compute_exchange_features(
     trade_df : pd.DataFrame
         Output of :func:`parsers.parse_trades`.
         Columns: ``trade_price`` (cents), ``trade_qty``, ``is_buy``.
-    resample_freq : str
+    resample_freq : str or None
         Pandas offset alias for the resample grid (default ``"1s"``).
+        Use ``"event"`` or ``None`` to keep native event timestamps.
 
     Returns
     -------
@@ -94,6 +95,18 @@ def compute_exchange_features(
         )
 
     trade_df = trade_df.copy()
+
+    mode = None if resample_freq is None else str(resample_freq).lower()
+    if mode in {None, "event", "none", "raw", "native", "ns", "nanosecond", "nanoseconds"}:
+        # Keep native timestamps; collapse duplicate timestamps only.
+        grouped = trade_df.groupby(level=0)
+        feats = pd.DataFrame(index=grouped.size().index)
+        feats.index.name = "time"
+        feats["last_trade_price"] = grouped["trade_price"].last() / 100.0
+        feats["traded_volume"] = grouped["trade_qty"].sum()
+        feats["trade_intensity"] = grouped["trade_qty"].count()
+        feats.sort_index(inplace=True)
+        return feats
 
     resampled = trade_df.resample(resample_freq)
 
@@ -122,6 +135,7 @@ def compute_execution_features(
     mkt_open: pd.Timestamp,
     mkt_close: pd.Timestamp,
     resample_freq: str = "1s",
+    time_index: pd.DatetimeIndex | None = None,
 ) -> pd.DataFrame:
     """Compute features tracking the execution agent's progress.
 
@@ -137,7 +151,9 @@ def compute_execution_features(
     mkt_open, mkt_close : pd.Timestamp
         Market open / close times (for ``time_remaining``).
     resample_freq : str
-        Resample frequency.
+        Resample frequency (used when ``time_index`` is None).
+    time_index : pd.DatetimeIndex or None
+        If provided, features are aligned to this explicit index (event grid).
 
     Returns
     -------
@@ -145,7 +161,10 @@ def compute_execution_features(
         Columns: remaining_inventory, executed_volume,
         last_execution_price, time_remaining.
     """
-    time_grid = pd.date_range(mkt_open, mkt_close, freq=resample_freq, name="time")
+    if time_index is None:
+        time_grid = pd.date_range(mkt_open, mkt_close, freq=resample_freq, name="time")
+    else:
+        time_grid = pd.DatetimeIndex(time_index, name="time").sort_values().unique()
     feats = pd.DataFrame(index=time_grid)
 
     if exec_df.empty:
@@ -153,21 +172,30 @@ def compute_execution_features(
         feats["executed_volume"] = 0.0
         feats["last_execution_price"] = np.nan
     else:
-        # Resample cumulative quantities to the grid
-        cum = exec_df["cumulative_qty"].resample(resample_freq).last()
+        if time_index is None:
+            # Resample cumulative quantities to the grid
+            cum = exec_df["cumulative_qty"].resample(resample_freq).last()
+            last_px = (exec_df["exec_price"] / 100.0).resample(resample_freq).last()
+        else:
+            # Keep event-level timestamps and align to explicit index
+            cum = exec_df["cumulative_qty"].groupby(level=0).last()
+            last_px = (exec_df["exec_price"] / 100.0).groupby(level=0).last()
+
         cum = cum.reindex(time_grid, method="ffill").fillna(0)
         feats["executed_volume"] = cum
         feats["remaining_inventory"] = total_inventory - cum
 
         # Convert exec prices: cents → dollars
-        last_px = (exec_df["exec_price"] / 100.0).resample(resample_freq).last()
         last_px = last_px.reindex(time_grid, method="ffill")
         feats["last_execution_price"] = last_px
 
     # Time remaining: 1.0 at open → 0.0 at close
     total_seconds = (mkt_close - mkt_open).total_seconds()
     elapsed = (time_grid - mkt_open).total_seconds()
-    feats["time_remaining"] = np.clip(1.0 - elapsed / total_seconds, 0.0, 1.0)
+    if total_seconds <= 0:
+        feats["time_remaining"] = 0.0
+    else:
+        feats["time_remaining"] = np.clip(1.0 - elapsed / total_seconds, 0.0, 1.0)
 
     return feats
 
