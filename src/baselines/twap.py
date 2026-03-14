@@ -12,31 +12,20 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from execution_infra import EnvConfig, ExecutionEnv
 from src.common.actions import DEFAULT_ACTION_SPEC
 from src.common.logger import RunLogger
-from src.envs.stub_env import StubExecutionEnv
+from src.common.run_dirs import build_run_dir as build_run_dir_common
 from execution_infra.abides_replay_env import AbidesReplayEnv
 
 
 def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
-    if run_name is None:
-        run_name = datetime.now().strftime("twap_%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, run_name)
-    if os.path.exists(run_dir):
-        if overwrite:
-            try:
-                shutil.rmtree(run_dir)
-            except PermissionError as exc:
-                raise PermissionError(
-                    f"Cannot overwrite run directory '{run_dir}'. "
-                    "Close files under this folder (editor/Explorer) or use a different --run-name."
-                ) from exc
-        else:
-            raise ValueError(
-                f"Run directory already exists: {run_dir}. "
-                "Use --overwrite or choose a new --run-name."
-            )
-    return run_dir
+    return build_run_dir_common(
+        base_dir=base_dir,
+        run_name=run_name,
+        overwrite=overwrite,
+        default_prefix="twap",
+    )
 
 
 def run_twap(args: argparse.Namespace) -> str:
@@ -51,8 +40,15 @@ def run_twap(args: argparse.Namespace) -> str:
         print(f"[twap] Using AbidesReplayEnv  npz={args.npz_path} (split={args.split})")
     else:
         max_trade_size = args.Q0 / float(args.T)
-        env = StubExecutionEnv(T=args.T, Q0=args.Q0, max_trade_size=max_trade_size, seed=args.seed)
-        print("[twap] Using synthetic StubExecutionEnv")
+        env = ExecutionEnv(
+            EnvConfig(
+                total_inventory=int(args.Q0),
+                n_steps=int(args.T),
+                force_liquidation=True,
+                seed=args.seed,
+            )
+        )
+        print("[twap] Using synthetic ExecutionEnv (stateful light LOB)")
     run_dir = build_run_dir(args.base_run_dir, args.run_name, overwrite=args.overwrite)
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
@@ -77,8 +73,8 @@ def run_twap(args: argparse.Namespace) -> str:
 
         while not done:
             # Equal-slice TWAP: sell exactly target_qty shares each step.
-            # AbidesReplayEnv exposes step_with_qty() for this; StubExecutionEnv
-            # uses the closest discrete action.
+            # Envs with step_with_qty() use exact sizing; discrete envs fall back
+            # to the closest action.
             if hasattr(env, "step_with_qty"):
                 _, reward, terminated, truncated, info = env.step_with_qty(int(round(target_qty)))
                 action = -1   # not applicable for direct-qty mode
@@ -153,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
     # ── ABIDES replay ─────────────────────────────────────────────
     parser.add_argument("--use-abides", action="store_true",
-                        help="Use AbidesReplayEnv (real ABIDES data) instead of StubExecutionEnv.")
+                        help="Use AbidesReplayEnv (real ABIDES data) instead of the synthetic light LOB env.")
     parser.add_argument("--npz-path", type=str, default="data/features.npz",
                         help="Path to features.npz produced by the feature extraction pipeline.")
     parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"],

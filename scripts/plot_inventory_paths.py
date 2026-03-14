@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.metrics.metrics import load_trajectories
+from src.metrics.metrics import load_episodes, load_trajectories
 
 plt.rcParams.update({
     "figure.dpi": 150,
@@ -45,6 +45,28 @@ plt.rcParams.update({
     "grid.alpha": 0.3,
     "grid.linestyle": "--",
 })
+
+
+def _pretty_strategy_name(raw_name: str) -> str:
+    mapping = {
+        "dqn": "DQN",
+        "dqn_eval": "DQN",
+        "double_dqn": "Double DQN",
+        "double_dqn_eval": "Double DQN",
+        "tabular_q": "Tabular Q",
+        "tabular_q_eval": "Tabular Q",
+        "twap": "TWAP",
+        "immediate": "Immediate",
+        "last_minute": "Last Minute",
+    }
+    return mapping.get(raw_name, raw_name.replace("_", " ").title())
+
+
+def _infer_rl_label(rl_run_dir: str) -> str:
+    episodes_df = load_episodes(rl_run_dir)
+    if "strategy" in episodes_df.columns and not episodes_df["strategy"].dropna().empty:
+        return _pretty_strategy_name(str(episodes_df["strategy"].dropna().iloc[0]))
+    return "RL"
 
 
 def _add_elapsed_time(traj: pd.DataFrame) -> pd.DataFrame:
@@ -76,8 +98,26 @@ def _build_mean_path(
         traj = traj[traj["episode"] >= cutoff]
 
     if x_axis == "step":
-        mean_path = (traj.groupby("t", as_index=False)["remaining_inventory"]
-                     .mean().sort_values("t"))
+        full_t = pd.Index(range(1, int(T) + 1), name="t")
+        per_episode = []
+        for _, ep_df in traj.groupby("episode"):
+            ep_df = ep_df.sort_values("t")
+            series = ep_df.set_index("t")["remaining_inventory"].astype(float)
+            if series.empty:
+                continue
+            terminal_inv = float(series.iloc[-1])
+            series = series.reindex(full_t)
+            series = series.ffill().fillna(float(Q0))
+            series = series.fillna(terminal_inv)
+            if terminal_inv <= 1e-8:
+                series = series.fillna(0.0)
+            per_episode.append(series)
+
+        if not per_episode:
+            raise ValueError("No trajectory rows available to build the inventory path.")
+
+        mean_path = pd.concat(per_episode, axis=1).mean(axis=1).reset_index()
+        mean_path.columns = ["t", "remaining_inventory"]
         # Anchor at t=0
         path = pd.concat(
             [pd.DataFrame({"x": [0.0], "remaining_inventory": [float(Q0)]}),
@@ -114,6 +154,7 @@ def main() -> None:
     p.add_argument("--baseline-run-dir", default=None)
     p.add_argument("--twap-run-dir", default=None, help="Backward-compatible alias for --baseline-run-dir")
     p.add_argument("--baseline-label", default="Baseline")
+    p.add_argument("--rl-label", default=None)
     p.add_argument("--out",   default="reports/figures/inventory_path.png")
     p.add_argument("--Q0",  type=float, default=1000.0, help="Initial inventory")
     p.add_argument("--T",   type=int,   default=60,     help="Total time steps")
@@ -122,11 +163,12 @@ def main() -> None:
     p.add_argument("--time-unit", choices=["ms", "s"], default="ms",
                    help="Time unit when --x-axis time.")
     p.add_argument("--eval-frac", type=float, default=0.2,
-                   help="Fraction of last DQN episodes used for mean path")
+                   help="Fraction of last RL episodes used for mean path")
     args = p.parse_args()
     baseline_run_dir = args.baseline_run_dir or args.twap_run_dir
     if baseline_run_dir is None:
         raise ValueError("Provide --baseline-run-dir (or legacy --twap-run-dir).")
+    rl_label = args.rl_label or _infer_rl_label(args.rl_run_dir)
 
     rl_traj   = load_trajectories(args.rl_run_dir)
     baseline_traj = load_trajectories(baseline_run_dir)
@@ -140,7 +182,7 @@ def main() -> None:
 
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(rl_mean["x"],   rl_mean["remaining_inventory"],
-            color="#3A86FF", linewidth=2.5, label=f"DQN")
+            color="#3A86FF", linewidth=2.5, label=rl_label)
     ax.plot(baseline_mean["x"], baseline_mean["remaining_inventory"],
             color="#FF6B6B", linewidth=2.5, label=args.baseline_label)
 
@@ -154,7 +196,7 @@ def main() -> None:
     ax.set_ylim(0, args.Q0 * 1.05)
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel("Remaining Inventory", fontsize=12)
-    ax.set_title(f"Inventory Depletion: DQN vs {args.baseline_label}", fontsize=13, fontweight="bold")
+    ax.set_title(f"Inventory Depletion: {rl_label} vs {args.baseline_label}", fontsize=13, fontweight="bold")
     ax.legend(fontsize=10)
 
     os.makedirs(Path(args.out).parent, exist_ok=True)

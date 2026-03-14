@@ -2,8 +2,10 @@
 
 import csv
 import os
+import stat
+import time
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 @dataclass
 class RunLogger:
@@ -20,12 +22,29 @@ class RunLogger:
 
     @staticmethod
     def _append_row(path: str, row: Dict[str, Any], write_header: bool) -> bool:
-        file_exists = os.path.exists(path)
-        with open(path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-            if write_header and not file_exists:
-                writer.writeheader()
-            writer.writerow(row)
+        last_error: Optional[Exception] = None
+        for _ in range(50):
+            try:
+                file_exists = os.path.exists(path)
+                if file_exists:
+                    try:
+                        mode = os.stat(path).st_mode
+                        os.chmod(path, mode | stat.S_IWRITE)
+                    except OSError:
+                        pass
+
+                with open(path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                    if write_header and not file_exists:
+                        writer.writeheader()
+                    writer.writerow(row)
+                return True
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.1)
+
+        if last_error is not None:
+            raise last_error
         return True
 
     def log_episode(self, episode_row: Dict[str, Any]):

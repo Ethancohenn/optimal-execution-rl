@@ -15,31 +15,20 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from execution_infra import EnvConfig, ExecutionEnv
 from execution_infra.abides_replay_env import AbidesReplayEnv
 from src.common.actions import DEFAULT_ACTION_SPEC, action_to_qty
 from src.common.logger import RunLogger
-from src.envs.stub_env import StubExecutionEnv
+from src.common.run_dirs import build_run_dir as build_run_dir_common
 
 
 def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
-    if run_name is None:
-        run_name = datetime.now().strftime("random_guarded_%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, run_name)
-    if os.path.exists(run_dir):
-        if overwrite:
-            try:
-                shutil.rmtree(run_dir)
-            except PermissionError as exc:
-                raise PermissionError(
-                    f"Cannot overwrite run directory '{run_dir}'. "
-                    "Close files under this folder (editor/Explorer) or use a different --run-name."
-                ) from exc
-        else:
-            raise ValueError(
-                f"Run directory already exists: {run_dir}. "
-                "Use --overwrite or choose a new --run-name."
-            )
-    return run_dir
+    return build_run_dir_common(
+        base_dir=base_dir,
+        run_name=run_name,
+        overwrite=overwrite,
+        default_prefix="random_guarded",
+    )
 
 
 def _closest_discrete_action(remaining: float, max_trade_size: float, target_qty: float) -> int:
@@ -110,9 +99,15 @@ def run_random_guarded(args: argparse.Namespace) -> str:
         print(f"[random_guarded] Using AbidesReplayEnv  npz={args.npz_path} (split={args.split})")
         max_trade_size = float(args.Q0)
     else:
-        # Let the random policy choose from a full inventory-sized action cap.
-        env = StubExecutionEnv(T=args.T, Q0=args.Q0, max_trade_size=args.Q0, seed=args.seed)
-        print("[random_guarded] Using synthetic StubExecutionEnv")
+        env = ExecutionEnv(
+            EnvConfig(
+                total_inventory=int(args.Q0),
+                n_steps=int(args.T),
+                force_liquidation=True,
+                seed=args.seed,
+            )
+        )
+        print("[random_guarded] Using synthetic ExecutionEnv (stateful light LOB)")
         max_trade_size = float(args.Q0)
 
     run_dir = build_run_dir(args.base_run_dir, args.run_name, overwrite=args.overwrite)
@@ -225,7 +220,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-abides",
         action="store_true",
-        help="Use AbidesReplayEnv (real ABIDES data) instead of StubExecutionEnv.",
+        help="Use AbidesReplayEnv (real ABIDES data) instead of the synthetic light LOB env.",
     )
     parser.add_argument(
         "--npz-path",

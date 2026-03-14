@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.common.logger import RunLogger
+from src.common.run_dirs import build_run_dir as build_run_dir_common
 from src.envs.stub_env import StubExecutionEnv
 
 
@@ -55,24 +56,12 @@ def select_action(
 
 
 def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
-    if run_name is None:
-        run_name = datetime.now().strftime("stub_q_%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, run_name)
-    if os.path.exists(run_dir):
-        if overwrite:
-            try:
-                shutil.rmtree(run_dir)
-            except PermissionError as exc:
-                raise PermissionError(
-                    f"Cannot overwrite run directory '{run_dir}'. "
-                    "Close files under this folder (editor/Explorer) or use a different --run-name."
-                ) from exc
-        else:
-            raise ValueError(
-                f"Run directory already exists: {run_dir}. "
-                "Use --overwrite or choose a new --run-name."
-            )
-    return run_dir
+    return build_run_dir_common(
+        base_dir=base_dir,
+        run_name=run_name,
+        overwrite=overwrite,
+        default_prefix="stub_q",
+    )
 
 
 def train(args: argparse.Namespace) -> str:

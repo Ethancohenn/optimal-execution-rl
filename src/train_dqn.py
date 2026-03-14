@@ -21,10 +21,11 @@ from execution_infra import EnvConfig, ExecutionEnv
 from execution_infra.abides_replay_env import AbidesReplayEnv
 from src.agents.dqn import DQNAgent
 from src.common.logger import RunLogger
+from src.common.run_dirs import build_run_dir as build_run_dir_common
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train DQN/Double-DQN on execution_infra.ExecutionEnv.")
+    parser = argparse.ArgumentParser(description="Train DQN/Double DQN on the execution environment.")
 
     parser.add_argument("--episodes", type=int, default=500)
     parser.add_argument("--seed", type=int, default=7)
@@ -34,26 +35,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-actions", type=int, default=5)
     parser.add_argument("--initial-price", type=float, default=100.0)
     parser.add_argument("--tick-size", type=float, default=0.01)
-    parser.add_argument("--volatility", type=float, default=0.002)
+    parser.add_argument("--volatility", type=float, default=0.02)
     parser.add_argument("--spread-mean", type=float, default=0.05)
     parser.add_argument("--spread-std", type=float, default=0.01)
     parser.add_argument("--lob-depth-mean", type=int, default=500)
     parser.add_argument("--lob-depth-std", type=int, default=100)
-    parser.add_argument("--n-lob-levels", type=int, default=3)
+    parser.add_argument("--n-lob-levels", type=int, default=5)
+    parser.add_argument("--depth-decay", type=float, default=0.35)
+    parser.add_argument("--obs-depth-levels", type=int, default=3)
+    parser.add_argument("--market-lot-size", type=int, default=25)
+    parser.add_argument("--market-order-intensity", type=float, default=2.0)
+    parser.add_argument("--limit-order-intensity", type=float, default=1.2)
+    parser.add_argument("--cancellation-rate", type=float, default=0.04)
+    parser.add_argument("--quote-improve-prob", type=float, default=0.15)
+    parser.add_argument("--fundamental-mean-reversion", type=float, default=0.10)
+    parser.add_argument("--order-flow-memory", type=float, default=0.25)
     parser.add_argument("--eta", type=float, default=2.5e-6)
     parser.add_argument("--gamma-perm", type=float, default=2.5e-7)
+    parser.add_argument("--agent-permanent-impact", type=float, default=1.5)
     parser.add_argument("--lambda-penalty", type=float, default=1.0)
-    parser.add_argument("--urgency-coef", type=float, default=50.0)
+    parser.add_argument("--urgency-coef", type=float, default=2.0)
+    parser.add_argument("--force-liquidation", action="store_true", default=True)
+    parser.add_argument("--no-force-liquidation", dest="force_liquidation", action="store_false")
 
     parser.add_argument("--hidden-dims", nargs="+", type=int, default=[128, 128])
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
-    parser.add_argument("--epsilon-decay-steps", type=int, default=20_000)
+    parser.add_argument("--epsilon-decay-steps", type=int, default=2_500)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--replay-capacity", type=int, default=100_000)
-    parser.add_argument("--warmup-steps", type=int, default=1_000)
+    parser.add_argument("--warmup-steps", type=int, default=128)
     parser.add_argument(
         "--algorithm",
         type=str,
@@ -61,27 +74,19 @@ def parse_args() -> argparse.Namespace:
         choices=["dqn", "double_dqn"],
         help="Training algorithm. Use 'double_dqn' for Double DQN targets.",
     )
-    parser.add_argument(
-        "--double-dqn",
-        action="store_true",
-        help="Alias for --algorithm double_dqn.",
-    )
-    parser.add_argument("--smoothness-coef", type=float, default=0.01)
+    parser.add_argument("--double-dqn", action="store_true", help="Alias for --algorithm double_dqn.")
+    parser.add_argument("--smoothness-coef", type=float, default=0.0)
     parser.add_argument("--target-update-interval", type=int, default=50)
     parser.add_argument("--tau", type=float, default=0.05)
 
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
-    parser.add_argument("--save-model", action="store_true", help="Save policy network to run_dir/policy_net.pt")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--save-model", action="store_true")
 
-    # ── ABIDES replay ─────────────────────────────────────────────
-    parser.add_argument("--use-abides", action="store_true",
-                        help="Use AbidesReplayEnv (real ABIDES data) instead of synthetic ExecutionEnv.")
-    parser.add_argument("--npz-path", type=str, default="data/features.npz",
-                        help="Path to features.npz produced by the feature extraction pipeline.")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "test", "all"],
-                        help="Train/test split of the data file (first 80%% or last 20%%). Default: train.")
+    parser.add_argument("--use-abides", action="store_true")
+    parser.add_argument("--npz-path", type=str, default="data/features.npz")
+    parser.add_argument("--split", type=str, default="train", choices=["train", "test", "all"])
     return parser.parse_args()
 
 
@@ -97,24 +102,12 @@ def build_run_dir(
     overwrite: bool,
     default_prefix: str,
 ) -> str:
-    if run_name is None:
-        run_name = datetime.now().strftime(f"{default_prefix}_%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, run_name)
-    if os.path.exists(run_dir):
-        if overwrite:
-            try:
-                shutil.rmtree(run_dir)
-            except PermissionError as exc:
-                raise PermissionError(
-                    f"Cannot overwrite run directory '{run_dir}'. "
-                    "Close files under this folder (editor/Explorer) or use a different --run-name."
-                ) from exc
-        else:
-            raise ValueError(
-                f"Run directory already exists: {run_dir}. "
-                "Use --overwrite or choose a new --run-name."
-            )
-    return run_dir
+    return build_run_dir_common(
+        base_dir=base_dir,
+        run_name=run_name,
+        overwrite=overwrite,
+        default_prefix=default_prefix,
+    )
 
 
 def set_global_seed(seed: int) -> None:
@@ -125,12 +118,7 @@ def set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def train(args: argparse.Namespace) -> str:
-    set_global_seed(args.seed)
-    algo_name, use_double_dqn = resolve_algorithm(args)
-    print(f"[train_dqn] Algorithm={algo_name} (double_dqn={use_double_dqn})")
-
-    # ── Build environment ─────────────────────────────────────────
+def build_env(args: argparse.Namespace):
     if args.use_abides:
         env = AbidesReplayEnv(
             npz_path=args.npz_path,
@@ -143,29 +131,49 @@ def train(args: argparse.Namespace) -> str:
             urgency_coef=args.urgency_coef,
             split=args.split,
         )
-        print(f"[train_dqn] Using AbidesReplayEnv  npz={args.npz_path} (split={args.split})")
-        # Save normalisation stats for later use during eval on held-out data
-        _norm_stats = {"mean_spread": env._mean_spread, "mean_bid_vol": env._mean_bid_vol}
-    else:
-        cfg = EnvConfig(
-            total_inventory=args.total_inventory,
-            n_steps=args.n_steps,
-            n_actions=args.n_actions,
-            initial_price=args.initial_price,
-            tick_size=args.tick_size,
-            volatility=args.volatility,
-            spread_mean=args.spread_mean,
-            spread_std=args.spread_std,
-            lob_depth_mean=args.lob_depth_mean,
-            lob_depth_std=args.lob_depth_std,
-            n_lob_levels=args.n_lob_levels,
-            eta=args.eta,
-            gamma_perm=args.gamma_perm,
-            lambda_penalty=args.lambda_penalty,
-            seed=args.seed,
-        )
-        env = ExecutionEnv(config=cfg)
-        print(f"[train_dqn] Using synthetic ExecutionEnv")
+        norm_stats = {"mean_spread": env._mean_spread, "mean_bid_vol": env._mean_bid_vol}
+        return env, "abides_replay", norm_stats
+
+    cfg = EnvConfig(
+        total_inventory=args.total_inventory,
+        n_steps=args.n_steps,
+        n_actions=args.n_actions,
+        initial_price=args.initial_price,
+        tick_size=args.tick_size,
+        volatility=args.volatility,
+        spread_mean=args.spread_mean,
+        spread_std=args.spread_std,
+        lob_depth_mean=args.lob_depth_mean,
+        lob_depth_std=args.lob_depth_std,
+        n_lob_levels=args.n_lob_levels,
+        depth_decay=args.depth_decay,
+        obs_depth_levels=args.obs_depth_levels,
+        market_lot_size=args.market_lot_size,
+        market_order_intensity=args.market_order_intensity,
+        limit_order_intensity=args.limit_order_intensity,
+        cancellation_rate=args.cancellation_rate,
+        quote_improve_prob=args.quote_improve_prob,
+        fundamental_mean_reversion=args.fundamental_mean_reversion,
+        order_flow_memory=args.order_flow_memory,
+        eta=args.eta,
+        gamma_perm=args.gamma_perm,
+        agent_permanent_impact=args.agent_permanent_impact,
+        lambda_penalty=args.lambda_penalty,
+        urgency_penalty=args.urgency_coef,
+        force_liquidation=args.force_liquidation,
+        seed=args.seed,
+    )
+    return ExecutionEnv(config=cfg), "light_lob", None
+
+
+def train(args: argparse.Namespace) -> str:
+    set_global_seed(args.seed)
+    algo_name, use_double_dqn = resolve_algorithm(args)
+    env, env_name, norm_stats = build_env(args)
+
+    print(f"[train_dqn] Algorithm={algo_name} (double_dqn={use_double_dqn})")
+    print(f"[train_dqn] Environment={env_name}")
+
     state_dim = int(env.observation_space.shape[0])
     action_dim = int(env.action_space.n)
 
@@ -186,17 +194,24 @@ def train(args: argparse.Namespace) -> str:
         target_update_interval=args.target_update_interval,
         tau=args.tau,
     )
+
     run_prefix = "ddqn_exec" if use_double_dqn else "dqn_exec"
-    run_dir = build_run_dir(
-        args.base_run_dir,
-        args.run_name,
-        overwrite=args.overwrite,
-        default_prefix=run_prefix,
-    )
+    run_dir = build_run_dir(args.base_run_dir, args.run_name, args.overwrite, run_prefix)
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
+    with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "algorithm": algo_name,
+                "environment": env_name,
+                "args": vars(args),
+            },
+            handle,
+            indent=2,
+        )
+
     for episode in trange(args.episodes, desc="train"):
-        state, info = env.reset(seed=args.seed + episode)
+        state, _ = env.reset(seed=args.seed + episode)
         done = False
         ep_reward = 0.0
         ep_is = 0.0
@@ -217,43 +232,38 @@ def train(args: argparse.Namespace) -> str:
                 loss_count += 1
 
             executed_qty = int(info.get("executed_qty", 0))
-            step_is = -float(reward)
+            step_is = float(info.get("step_is", -reward))
             ep_is += step_is
-
-            exec_price = float(info.get("exec_price", float("nan")))
-            mid_price = float(info.get("mid_price", float("nan")))
-            timestamp_ns = int(info.get("timestamp_ns", -1))
 
             logger.log_step(
                 {
                     "episode": episode,
                     "step": step_idx,
-                    "t": int(info["step"]),
-                    "timestamp_ns": timestamp_ns,
-                    "remaining_inventory": float(info["inventory_remaining"]),
+                    "t": int(info.get("step", step_idx)),
+                    "timestamp_ns": int(info.get("timestamp_ns", -1)),
+                    "remaining_inventory": float(info.get("inventory_remaining", 0.0)),
                     "action": int(action),
-                    "exec_price": exec_price,
-                    "mid_price": mid_price,
+                    "exec_price": float(info.get("exec_price", float("nan"))),
+                    "mid_price": float(info.get("mid_price", float("nan"))),
                     "reward": float(reward),
                     "is_twap": 0,
                     "executed_qty": float(executed_qty),
-                    "forced_qty": 0.0,
-                    "step_is": float(step_is),
+                    "forced_qty": float(info.get("forced_qty", 0.0)),
+                    "step_is": step_is,
                 }
             )
 
-            ep_reward += reward
+            ep_reward += float(reward)
             prev_action = int(action)
             state = next_state
             step_idx += 1
-
 
         logger.log_episode(
             {
                 "episode": episode,
                 "episode_reward": float(ep_reward),
                 "episode_is": float(ep_is),
-                "completed": int(info["inventory_remaining"] <= 0),
+                "completed": int(float(info.get("inventory_remaining", 1.0)) <= 1e-6),
                 "mean_loss": float(ep_loss / max(1, loss_count)),
                 "epsilon": float(agent.epsilon()),
                 "steps": step_idx,
@@ -261,12 +271,12 @@ def train(args: argparse.Namespace) -> str:
                 "is_twap": 0,
             }
         )
+
     if args.save_model:
-        model_path = os.path.join(run_dir, "policy_net.pt")
-        torch.save(agent.policy_net.state_dict(), model_path)
-        if args.use_abides:
-            with open(os.path.join(run_dir, "norm_stats.json"), "w") as f:
-                json.dump(_norm_stats, f, indent=2)
+        torch.save(agent.policy_net.state_dict(), os.path.join(run_dir, "policy_net.pt"))
+        if norm_stats is not None:
+            with open(os.path.join(run_dir, "norm_stats.json"), "w", encoding="utf-8") as handle:
+                json.dump(norm_stats, handle, indent=2)
 
     return run_dir
 

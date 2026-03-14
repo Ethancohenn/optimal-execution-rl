@@ -1,5 +1,5 @@
 """
-Side-by-side strategy comparison plots: DQN vs one baseline.
+Side-by-side strategy comparison plots: RL strategy vs one baseline.
 
 Generates a single figure with 4 panels:
   1. Episode IS boxplot
@@ -55,10 +55,41 @@ def _tail(df: pd.DataFrame, k: int) -> pd.DataFrame:
     return df[df["episode"].isin(keep)]
 
 
+def _pretty_strategy_name(raw_name: str) -> str:
+    mapping = {
+        "dqn": "DQN",
+        "dqn_eval": "DQN",
+        "double_dqn": "Double DQN",
+        "double_dqn_eval": "Double DQN",
+        "tabular_q": "Tabular Q",
+        "tabular_q_eval": "Tabular Q",
+        "twap": "TWAP",
+        "immediate": "Immediate",
+        "last_minute": "Last Minute",
+    }
+    return mapping.get(raw_name, raw_name.replace("_", " ").title())
+
+
+def _infer_rl_label(episodes_df: pd.DataFrame, rl_run_dir: str) -> str:
+    if "strategy" in episodes_df.columns and not episodes_df["strategy"].dropna().empty:
+        return _pretty_strategy_name(str(episodes_df["strategy"].dropna().iloc[0]))
+
+    config_path = Path(rl_run_dir) / "config.json"
+    if config_path.exists():
+        import json
+
+        with open(config_path, encoding="utf-8") as handle:
+            config = json.load(handle)
+        return _pretty_strategy_name(str(config.get("algorithm", "rl")))
+
+    return "RL"
+
+
 def _boxplot_panel(
     ax: plt.Axes,
     data_rl: np.ndarray,
     data_baseline: np.ndarray,
+    rl_label: str,
     baseline_label: str,
     ylabel: str,
     title: str,
@@ -80,7 +111,7 @@ def _boxplot_panel(
             item.set_color("grey")
 
     ax.set_xticks([1, 2])
-    ax.set_xticklabels(["DQN", baseline_label], fontsize=11)
+    ax.set_xticklabels([rl_label, baseline_label], fontsize=11)
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(title, fontsize=11, fontweight="bold")
 
@@ -110,8 +141,9 @@ def main() -> None:
     p.add_argument("--baseline-run-dir", default=None)
     p.add_argument("--twap-run-dir", default=None, help="Backward-compatible alias for --baseline-run-dir")
     p.add_argument("--baseline-label", default="Baseline")
+    p.add_argument("--rl-label", default=None)
     p.add_argument("--out", default="reports/figures/comparison.png")
-    p.add_argument("--eval-last", type=int, default=400, help="Use last N DQN episodes as eval set")
+    p.add_argument("--eval-last", type=int, default=400, help="Use last N RL episodes as eval set")
     args = p.parse_args()
 
     baseline_run_dir = args.baseline_run_dir or args.twap_run_dir
@@ -122,6 +154,7 @@ def main() -> None:
     baseline_ep = load_episodes(baseline_run_dir)
     rl_traj = load_trajectories(args.rl_run_dir)
     baseline_traj = load_trajectories(baseline_run_dir)
+    rl_label = args.rl_label or _infer_rl_label(rl_ep, args.rl_run_dir)
 
     rl_ep_eval = _tail(rl_ep, args.eval_last)
     rl_traj_eval = _tail(rl_traj, args.eval_last)
@@ -141,7 +174,7 @@ def main() -> None:
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 5))
     fig.suptitle(
-        f"DQN vs {args.baseline_label} - Strategy Comparison (DQN eval: last {args.eval_last} episodes)",
+        f"{rl_label} vs {args.baseline_label} - Strategy Comparison ({rl_label} eval: last {args.eval_last} episodes)",
         fontsize=13,
         fontweight="bold",
         y=1.01,
@@ -151,6 +184,7 @@ def main() -> None:
         axes[0],
         rl_is,
         baseline_is,
+        rl_label,
         args.baseline_label,
         "Implementation Shortfall",
         "IS per Episode (lower is better)",
@@ -160,6 +194,7 @@ def main() -> None:
         axes[1],
         rl_reward,
         baseline_reward,
+        rl_label,
         args.baseline_label,
         "Episode Reward",
         "Episode Reward (higher is better)",
@@ -169,6 +204,7 @@ def main() -> None:
         axes[2],
         rl_slip,
         baseline_slip,
+        rl_label,
         args.baseline_label,
         "exec - mid price ($)",
         "Execution Slippage / Step (closer to 0 is better)",
@@ -177,7 +213,7 @@ def main() -> None:
 
     ax4 = axes[3]
     bars = ax4.bar(
-        ["DQN", args.baseline_label],
+        [rl_label, args.baseline_label],
         [rl_comp * 100, baseline_comp * 100],
         color=[DQN_COLOR, BASELINE_COLOR],
         alpha=0.8,
@@ -192,8 +228,8 @@ def main() -> None:
             fontsize=11,
             fontweight="bold",
         )
-    winner_label = "DQN" if rl_comp >= baseline_comp else args.baseline_label
-    winner_x = 0.25 if winner_label == "DQN" else 0.75
+    winner_label = rl_label if rl_comp >= baseline_comp else args.baseline_label
+    winner_x = 0.25 if winner_label == rl_label else 0.75
     ax4.text(winner_x, 0.97, "better", ha="center", va="top", transform=ax4.transAxes, color="green", fontsize=9)
     ax4.set_ylabel("Completion Rate (%)", fontsize=10)
     ax4.set_title("Liquidation Completion (higher is better)", fontsize=11, fontweight="bold")
@@ -207,7 +243,7 @@ def main() -> None:
     print(f"Saved figure to: {args.out}")
 
     print("\nSummary")
-    print(f"{'Metric':<30} {'DQN':>12} {args.baseline_label:>12} {'Winner':>12}")
+    print(f"{'Metric':<30} {rl_label:>12} {args.baseline_label:>12} {'Winner':>12}")
     print("-" * 72)
     rows = [
         ("Mean IS", float(np.mean(rl_is)), float(np.mean(baseline_is)), "lower"),
@@ -217,11 +253,11 @@ def main() -> None:
     ]
     for name, rv, bv, prefer in rows:
         if prefer == "lower":
-            winner = "DQN" if rv < bv else args.baseline_label
+            winner = rl_label if rv < bv else args.baseline_label
         elif prefer == "higher":
-            winner = "DQN" if rv > bv else args.baseline_label
+            winner = rl_label if rv > bv else args.baseline_label
         else:
-            winner = "DQN" if abs(rv) < abs(bv) else args.baseline_label
+            winner = rl_label if abs(rv) < abs(bv) else args.baseline_label
         print(f"{name:<30} {rv:>12.3f} {bv:>12.3f} {winner:>12}")
 
 

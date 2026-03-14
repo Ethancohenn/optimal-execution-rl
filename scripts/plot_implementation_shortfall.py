@@ -19,9 +19,31 @@ from src.metrics.metrics import (
 )
 
 
+def _pretty_strategy_name(raw_name: str) -> str:
+    mapping = {
+        "dqn": "DQN",
+        "dqn_eval": "DQN",
+        "double_dqn": "Double DQN",
+        "double_dqn_eval": "Double DQN",
+        "tabular_q": "Tabular Q",
+        "tabular_q_eval": "Tabular Q",
+        "twap": "TWAP",
+        "immediate": "Immediate",
+        "last_minute": "Last Minute",
+    }
+    return mapping.get(raw_name, raw_name.replace("_", " ").title())
+
+
+def _infer_rl_label(episodes_df: pd.DataFrame) -> str:
+    if "strategy" in episodes_df.columns and not episodes_df["strategy"].dropna().empty:
+        return _pretty_strategy_name(str(episodes_df["strategy"].dropna().iloc[0]))
+    return "RL"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot implementation shortfall comparison (RL vs baseline).")
     parser.add_argument("--rl-run-dir", type=str, required=True, help="RL run directory.")
+    parser.add_argument("--rl-label", type=str, default=None, help="Display name used for the RL strategy.")
     parser.add_argument("--baseline-run-dir", type=str, default=None, help="Baseline run directory.")
     parser.add_argument(
         "--twap-run-dir",
@@ -87,6 +109,7 @@ def main() -> None:
     baseline_eps = load_episodes(baseline_run_dir)
     rl_traj = load_trajectories(args.rl_run_dir)
     baseline_traj = load_trajectories(baseline_run_dir)
+    rl_label = args.rl_label or _infer_rl_label(rl_eps)
 
     rl_eps, rl_traj = filter_tail(rl_eps, rl_traj, args.tail_k)
     baseline_eps, baseline_traj = filter_tail(baseline_eps, baseline_traj, args.tail_k)
@@ -98,9 +121,9 @@ def main() -> None:
     os.makedirs(out_path.parent, exist_ok=True)
 
     plt.figure(figsize=(7.5, 4.5))
-    plt.boxplot([rl_is.values, baseline_is.values], tick_labels=["RL", args.baseline_label], showmeans=True)
+    plt.boxplot([rl_is.values, baseline_is.values], tick_labels=[rl_label, args.baseline_label], showmeans=True)
     plt.ylabel("Implementation shortfall")
-    plt.title(f"Implementation Shortfall: RL vs {args.baseline_label}")
+    plt.title(f"Implementation Shortfall: {rl_label} vs {args.baseline_label}")
     plt.grid(axis="y", alpha=0.2)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -110,7 +133,7 @@ def main() -> None:
     baseline_summary = summarize(baseline_eps, baseline_traj, baseline_is)
     summary = pd.DataFrame(
         {
-            "strategy": ["RL", args.baseline_label],
+            "strategy": [rl_label, args.baseline_label],
             "mean_is": [rl_summary["mean_is"], baseline_summary["mean_is"]],
             "p95_is": [rl_summary["p95_is"], baseline_summary["p95_is"]],
             "completion_rate": [rl_summary["completion_rate"], baseline_summary["completion_rate"]],
