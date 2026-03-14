@@ -7,7 +7,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Allow running as either `python -m src.baselines.immediate` or `python src/baselines/immediate.py`.
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -64,7 +63,7 @@ def run_immediate(args: argparse.Namespace) -> str:
             target_qty = remaining if step_idx == 0 else 0.0
             if hasattr(env, "step_with_qty"):
                 _, reward, terminated, truncated, info = env.step_with_qty(int(round(target_qty)))
-                action = -1  # not applicable for direct-qty mode
+                action = -1
             else:
                 action = 4 if target_qty > 0 else 0
                 _, reward, terminated, truncated, info = env.step(action)
@@ -132,25 +131,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
-    parser.add_argument(
-        "--use-abides",
-        action="store_true",
-        help="Use AbidesReplayEnv (real ABIDES data) instead of the synthetic light LOB env.",
-    )
-    parser.add_argument(
-        "--npz-path",
-        type=str,
-        default="data/features.npz",
-        help="Path to features.npz produced by the feature extraction pipeline.",
-    )
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="test",
-        choices=["train", "test", "all"],
-        help="Train/test split of the data file (first 80%% or last 20%%). Default: test.",
-    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--use-abides", action="store_true")
+    parser.add_argument("--npz-path", type=str, default="data/features.npz")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"])
     return parser.parse_args()
 
 

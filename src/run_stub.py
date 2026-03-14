@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Allow running as either `python -m src.run_stub` or `python src/run_stub.py`.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -155,7 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon-decay-episodes", type=int, default=200)
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
+    parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
 

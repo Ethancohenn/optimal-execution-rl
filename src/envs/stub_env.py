@@ -7,13 +7,6 @@ from gymnasium import spaces
 from src.common.actions import DEFAULT_ACTION_SPEC, action_to_qty
 
 class StubExecutionEnv(gym.Env):
-    '''A minimal Gymnasium env for testing the RL pipeline.
-
-    Observation:
-      [inv_remaining_norm, time_remaining_norm, mid_price_norm, spread_norm, vol_top1_norm, vol_top3_norm]
-    Action:
-      Discrete index into fractions list.
-    '''
 
     metadata = {"render_modes": []}
 
@@ -49,7 +42,6 @@ class StubExecutionEnv(gym.Env):
         self.t = 0
         self.remaining_inventory = self.Q0
 
-        # synthetic market state
         self.mid_price = 100.0
         self.spread = 0.02
         self.vol_top1 = 500.0
@@ -60,11 +52,9 @@ class StubExecutionEnv(gym.Env):
         return obs, info
 
     def step(self, action: int):
-        # price evolves slightly
         noise = float(self._rng.normal(0.0, 0.01))
         self.mid_price = float(self.mid_price + noise)
 
-        # execute qty based on action
         action_qty = action_to_qty(action, self.remaining_inventory, self.max_trade_size)
         action_is = self.impact_coeff * (action_qty ** 2)
         executed_qty = float(action_qty)
@@ -78,18 +68,15 @@ class StubExecutionEnv(gym.Env):
 
         forced_is = 0.0
         if terminated and self.remaining_inventory > 1e-6 and self.force_liquidation:
-            # Force liquidation at episode end so policies cannot avoid cost by not finishing.
             forced_qty = float(self.remaining_inventory)
             forced_is = self.terminal_impact_coeff * (forced_qty ** 2)
             executed_qty += forced_qty
             self.remaining_inventory = 0.0
 
-        # Equivalent average execution price for this step.
         step_is = float(action_is + forced_is)
         exec_price = float(self.mid_price - (step_is / executed_qty)) if executed_qty > 1e-12 else float("nan")
         reward = -step_is
 
-        # Legacy behavior for experiments that disable forced liquidation.
         if terminated and self.remaining_inventory > 1e-6 and not self.force_liquidation:
             reward -= float(0.01 * self.remaining_inventory)
 

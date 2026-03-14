@@ -72,9 +72,8 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="dqn",
         choices=["dqn", "double_dqn"],
-        help="Training algorithm. Use 'double_dqn' for Double DQN targets.",
     )
-    parser.add_argument("--double-dqn", action="store_true", help="Alias for --algorithm double_dqn.")
+    parser.add_argument("--double-dqn", action="store_true")
     parser.add_argument("--smoothness-coef", type=float, default=0.0)
     parser.add_argument("--target-update-interval", type=int, default=50)
     parser.add_argument("--tau", type=float, default=0.05)

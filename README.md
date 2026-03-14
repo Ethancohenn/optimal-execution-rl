@@ -1,248 +1,294 @@
 # Optimal Execution with Reinforcement Learning
 
-A CS234 project studying optimal trade execution as a sequential decision problem. We train RL agents (DQN, Double DQN) to liquidate a large inventory while minimising market impact, and compare them against TWAP/VWAP baselines.
+A CS234 project studying optimal trade execution as a sequential decision problem. We train RL agents (DQN, Double DQN, Tabular Q-Learning) to liquidate a large inventory while minimising market impact, and compare them against TWAP and other baselines.
+
+The project supports **two approaches**:
+
+| | **Approach A — ABIDES Replay** | **Approach B — Toy Environment** |
+|---|---|---|
+| Data source | ABIDES multi-agent market simulator | Self-contained synthetic simulator |
+| Environment | `AbidesReplayEnv` (replays real LOB data) | `ExecutionEnv` (light LOB) or `StubExecutionEnv` (minimal) |
+| Setup complexity | Needs Python 3.6 env + simulation runs | Zero extra setup — works out of the box |
+| Best for | Realistic evaluation | Fast prototyping & debugging |
+
+---
 
 ## Repository Structure
 
 ```
 optimal-execution-rl/
-├── abides/            ← ABIDES multi-agent market simulator (Python 3.6)
-│   ├── config/        ← Simulation configurations (execution.py, qlearning.py, …)
-│   ├── agent/         ← Agent implementations (TWAP, VWAP, POV, …)
-│   ├── scripts/       ← Shell scripts to run simulations
+├── abides/                  ← ABIDES multi-agent market simulator (Python 3.6)
+│   ├── config/              ← Simulation configurations (execution.py, …)
+│   ├── agent/               ← Agent implementations (TWAP, VWAP, POV, …)
 │   └── requirements.txt
-├── execution_infra/   ← Our RL environment (Python 3.11)
-│   ├── config.py      ← Centralised hyperparameters (EnvConfig)
-│   ├── market_sim.py  ← Lightweight LOB simulator with market impact
-│   ├── execution_env.py ← gymnasium.Env wrapper
-│   ├── feature_extraction/  ← ABIDES log → training features pipeline
-│   │   ├── parsers.py       ← bz2 log readers (exchange, fundamental, exec agent)
-│   │   ├── features.py      ← Feature engineering (orderbook, trade, derived)
-│   │   └── pipeline.py      ← End-to-end orchestrator + CLI
-│   └── README.md      ← How to build RL agents on this env
-├── data/              ← Extracted feature files (.npz)
-└── README.md          ← This file
+├── execution_infra/         ← Environments & feature extraction (Python 3.11)
+│   ├── config.py            ← Centralised hyperparameters (EnvConfig)
+│   ├── market_sim.py        ← Lightweight LOB simulator with market impact
+│   ├── execution_env.py     ← ExecutionEnv — gymnasium.Env wrapper (light LOB)
+│   ├── abides_replay_env.py ← AbidesReplayEnv — replays extracted ABIDES data
+│   └── feature_extraction/  ← ABIDES log → .npz pipeline
+├── src/                     ← Training, evaluation, and agents (Python 3.11)
+│   ├── envs/
+│   │   └── stub_env.py      ← StubExecutionEnv — minimal toy env
+│   ├── agents/
+│   │   ├── dqn.py           ← DQN / Double DQN agent
+│   │   └── tabular_q.py     ← Tabular Q-learning agent
+│   ├── baselines/
+│   │   ├── twap.py          ← TWAP baseline
+│   │   ├── immediate.py     ← Sell-everything-immediately baseline
+│   │   ├── last_minute.py   ← Wait-then-sell baseline
+│   │   └── random_guarded.py ← Random-action baseline
+│   ├── train_dqn.py         ← Train DQN / Double DQN
+│   ├── train_tabular.py     ← Train tabular Q-learning
+│   ├── run_stub.py          ← Quick-start Q-learning on StubExecutionEnv
+│   ├── eval_dqn.py          ← Evaluate a saved DQN model
+│   └── eval_tabular.py      ← Evaluate a saved tabular Q model
+├── scripts/                 ← Plotting & analysis utilities
+│   ├── plot_comparison.py
+│   ├── plot_training_curve.py
+│   ├── plot_inventory_paths.py
+│   └── plot_implementation_shortfall.py
+├── data/                    ← Extracted feature files (.npz)
+├── runs/                    ← Training / eval run artifacts (auto-generated)
+└── README.md                ← This file
 ```
 
 ---
 
-## 1 · Setting Up ABIDES (Data-Generation Only)
+## 1 · Environment Setup
 
-ABIDES requires **Python 3.6**. We use it solely to generate realistic LOB simulation data — all RL code runs in a separate, modern Python environment.
-
-### macOS
+### Python 3.11 (RL code — required for both approaches)
 
 ```bash
-# 1. Install Miniconda (skip if you have conda)
-brew install --cask miniconda
-conda init zsh   # or conda init bash
+conda create -n cs234_rl python=3.11 -y
+conda activate cs234_rl
+pip install gymnasium numpy torch matplotlib pandas tqdm
+```
 
-# 2. Create the ABIDES environment(if you are on Apple Silicon Mac)
+### Python 3.6 (ABIDES — only needed for Approach A)
+
+<details>
+<summary><strong>macOS</strong></summary>
+
+```bash
+brew install --cask miniconda
+conda init zsh
+
+# Apple Silicon requires x86 sub-directory
 CONDA_SUBDIR=osx-64 conda create -n abides_sim python=3.6 -y
 conda activate abides_sim
 conda config --env --set subdir osx-64
 
-# 3. Install dependencies
-cd abides
-pip install -r requirements.txt
-
-# 4. Run a sample execution simulation
-cd ..                           # back to repo root
-python abides/abides.py -c execution -t ABM -d 20200101 -s 123456789 -e
+cd abides && pip install -r requirements.txt
 ```
+</details>
 
-### Windows
-
-#### Option A — Miniconda (recommended)
+<details>
+<summary><strong>Windows (Miniconda)</strong></summary>
 
 ```powershell
-# 1. Download and install Miniconda from https://docs.conda.io/en/latest/miniconda.html
-
-# 2. Open Anaconda Prompt
 conda create -n abides_sim python=3.6 -y
 conda activate abides_sim
-
-# 3. Install dependencies
 cd abides
 pip install -r requirements.txt
-
-# 4. Run a sample simulation
-cd ..
-python abides\abides.py -c execution -t ABM -d 20200101 -s 123456789 -e
 ```
+</details>
 
-#### Option B — WSL (Windows Subsystem for Linux)
-
-If you encounter issues with Python 3.6 on native Windows, use WSL:
+<details>
+<summary><strong>Windows (WSL)</strong></summary>
 
 ```bash
-# Inside WSL (Ubuntu)
 sudo apt update && sudo apt install -y wget
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 bash Miniconda3-latest-Linux-x86_64.sh
-# Follow prompts, then restart shell
-
 conda create -n abides_sim python=3.6 -y
 conda activate abides_sim
 cd /mnt/c/Users/<YOUR_USERNAME>/path/to/optimal-execution-rl/abides
 pip install -r requirements.txt
 ```
+</details>
 
-### Troubleshooting ABIDES
-
-| Issue | Fix |
-|-------|-----|
-| `python 3.6 not found` | Use `conda create -n abides_sim python=3.6.13` or install via pyenv |
-| `ModuleNotFoundError: Kernel` | Make sure you run `abides.py` from the `abides/` directory, or use the full path |
-| Slow simulation | Reduce `num_noise` in `config/execution.py` (default 5000) |
-
----
-
-## 2 · Setting Up the RL Environment
-
-The RL environment uses **Python 3.11** and is completely independent of ABIDES.
-
-### macOS & Windows (same steps)
-
-```bash
-# 1. Create a new conda environment
-conda create -n cs234_rl python=3.11 -y
-conda activate cs234_rl
-
-# 2. Install dependencies
-pip install gymnasium numpy torch matplotlib pandas tqdm
-
-# 3. Verify the environment works
-cd /path/to/optimal-execution-rl
-python -c "
-from execution_infra import ExecutionEnv
-env = ExecutionEnv()
-obs, info = env.reset()
-print('Observation:', obs)
-print('Action space:', env.action_space)
-for i in range(5):
-    obs, r, term, trunc, info = env.step(env.action_space.sample())
-    print(f'  step {i+1}: reward={r:.4f}, inv={info[\"inventory_remaining\"]}')
-print('Environment OK!')
-"
-```
-
-### Quick Start — Training an Agent
-
-```python
-from execution_infra import ExecutionEnv, EnvConfig
-
-# Create environment with custom config
-config = EnvConfig(total_inventory=1000, n_steps=60, lambda_penalty=1.0)
-env = ExecutionEnv(config)
-
-obs, info = env.reset(seed=42)
-total_reward = 0
-
-for step in range(config.n_steps):
-    action = env.action_space.sample()  # replace with your agent
-    obs, reward, terminated, truncated, info = env.step(action)
-    total_reward += reward
-    if terminated or truncated:
-        break
-
-print(f"Episode reward: {total_reward:.2f}")
-print(f"Completion: {info['completion_rate']:.1%}")
-print(f"Shortfall:  {info['implementation_shortfall']:.2f}")
-```
+| Troubleshooting | Fix |
+|-----------------|-----|
+| `python 3.6 not found` | `conda create -n abides_sim python=3.6.13` or install via pyenv |
+| `ModuleNotFoundError: Kernel` | Run from the `abides/` directory or use full path |
+| Slow simulation | Reduce `num_noise` in `config/execution.py` |
 
 ---
 
-## 3 · Generating ABIDES Simulation Data
+## 2 · Approach A — ABIDES Replay Environment
 
-Use the ABIDES conda environment (`abides_sim`) to produce LOB order-book logs:
+Use this approach for training on realistic market data generated by the ABIDES multi-agent simulator.
+
+### 2.1 Generate ABIDES Data
 
 ```bash
 conda activate abides_sim
 cd abides
-
-# Run the execution config (TWAP agent in a realistic LOB)
 python abides.py -c execution -t ABM -d 20200101 -s 123456789 -e -l my_run
-
-# Output lands in  abides/log/my_run/
-#   -> ExchangeAgent0.bz2   (order book snapshots)
-#   -> ORDERBOOK_ABM_FULL.bz2  (wide book)
+# Output → abides/log/my_run/
 ```
-
-Key flags:
 
 | Flag | Meaning |
 |------|---------|
-| `-c execution` | Use the `config/execution.py` configuration |
+| `-c execution` | Use `config/execution.py` |
 | `-t ABM` | Ticker symbol |
-| `-d 20200101` | Simulated historical date |
-| `-s 123456789` | Random seed (for reproducibility) |
-| `-e` | Enable the execution agent (TWAP by default) |
-| `-l my_run` | Name of the log directory |
+| `-d 20200101` | Simulated date |
+| `-s 123456789` | Random seed |
+| `-e` | Enable execution agent (TWAP by default) |
+| `-l my_run` | Log directory name |
 
-You can swap the execution agent in `config/execution.py` (TWAP, VWAP, or POV are all already implemented — just uncomment the one you want).
-
----
-
-## 4 · Feature Extraction Pipeline
-
-The feature extraction pipeline converts raw ABIDES `.bz2` log files into a training-ready `.npz` dataset. It parses the exchange event stream (best bid/ask updates, executed trades), the oracle fundamental value series, and any execution agent logs, then computes 17 market microstructure features — including mid-price, spread, order book imbalance, traded volume, trade intensity, rolling volatility, VWAP, and benchmark price — all resampled onto a uniform 1-second time grid.
-
-### CLI Usage
+### 2.2 Extract Features
 
 ```bash
 conda activate cs234_rl
-
-
-```
-
-### Python Usage
 python3 -m execution_infra.feature_extraction.pipeline \
-    --log-dir abides/log/my_sim_run \
+    --log-dir abides/log/my_run \
     --symbol IBM \
     --freq 1s \
     --output data/features.npz
-```python
-from execution_infra.feature_extraction import extract_features
-
-# Returns a DataFrame and a dict of numpy arrays
-df, arrays = extract_features("abides/log/my_sim_run")
-
-# Or save directly to .npz
-df, arrays = extract_features("abides/log/my_sim_run", output_path="data/features.npz")
-
-# Load later
-import numpy as np
-data = np.load("data/features.npz")
-X = data["features"]          # shape (7200, 17), float32
-names = data["feature_names"]  # array of 17 column name strings
 ```
 
-### Output Features (17 columns)
+The pipeline produces a `.npz` with 17 market microstructure features (mid-price, spread, order-book imbalance, trade intensity, volatility, VWAP, etc.) resampled onto a uniform 1-second grid.
 
-| # | Feature | Source | Description |
-|---|---------|--------|-------------|
-| 1 | `best_bid` | Exchange | Best bid price ($) |
-| 2 | `best_ask` | Exchange | Best ask price ($) |
-| 3 | `mid_price` | Exchange | (bid + ask) / 2 |
-| 4 | `spread` | Exchange | ask − bid ($) |
-| 5 | `bid_vol_1` | Exchange | Volume at best bid |
-| 6 | `ask_vol_1` | Exchange | Volume at best ask |
-| 7 | `order_book_imbalance` | Exchange | bid_vol / (bid + ask) |
-| 8 | `last_trade_price` | Exchange | Most recent fill price ($) |
-| 9 | `traded_volume` | Exchange | Shares traded per second |
-| 10 | `trade_intensity` | Exchange | Number of trades per second |
-| 11 | `remaining_inventory` | Exec Agent | Shares left to sell |
-| 12 | `executed_volume` | Exec Agent | Cumulative shares sold |
-| 13 | `last_execution_price` | Exec Agent | Last fill price ($) |
-| 14 | `time_remaining` | Derived | 1.0 → 0.0 over trading session |
-| 15 | `volatility` | Derived | Rolling std of mid-price log-returns |
-| 16 | `vwap` | Derived | Cumulative VWAP |
-| 17 | `benchmark_price` | Fundamental | Oracle fundamental value ($) |
+### 2.3 Train on ABIDES Data
+
+```bash
+# DQN / Double DQN
+python src/train_dqn.py --use-abides --npz-path data/features.npz \
+    --episodes 500 --save-model --algorithm double_dqn
+
+# Tabular Q-Learning
+python src/train_tabular.py --use-abides --npz-path data/features.npz \
+    --episodes 3000
+```
+
+### 2.4 Evaluate
+
+```bash
+python src/eval_dqn.py --model-path runs/<run>/policy_net.pt \
+    --npz-path data/features.npz --split test --episodes 200
+```
+
+### 2.5 Baselines on ABIDES Data
+
+```bash
+python src/baselines/twap.py --use-abides --npz-path data/features.npz --episodes 200
+```
 
 ---
 
-## 5 · Key Concepts
+## 3 · Approach B — Toy Environment (No ABIDES Needed)
+
+Use this approach for fast iteration. Everything runs out of the box with **only the `cs234_rl` conda environment** — no ABIDES, no data generation, no feature extraction.
+
+### 3.1 Available Environments
+
+#### `ExecutionEnv` — Lightweight LOB Simulator
+
+A fully self-contained limit-order-book simulator with configurable market dynamics. Located in `execution_infra/execution_env.py`.
+
+- **Simulates**: multi-level order book, market/limit order flow, cancellations, price mean-reversion, and agent market impact
+- **Observation** (6-dim): `[inventory_norm, time_remaining, spread_norm, bid_vol_top1, bid_vol_top3, ask_vol_top3]`
+- **Configurable via** `EnvConfig` (see `execution_infra/config.py`)
+
+```python
+from execution_infra import ExecutionEnv, EnvConfig
+
+config = EnvConfig(total_inventory=1000, n_steps=60, seed=42)
+env = ExecutionEnv(config)
+obs, info = env.reset()
+print("Obs shape:", obs.shape)  # (6,)
+```
+
+#### `StubExecutionEnv` — Minimal Toy Environment
+
+An even simpler environment for quick sanity checks. Located in `src/envs/stub_env.py`.
+
+- **Simulates**: GBM-like random-walk price with a fixed spread and quadratic market impact
+- **Observation** (6-dim): `[inventory_norm, time_remaining, mid_price_norm, spread_norm, vol_top1_norm, vol_top3_norm]`
+- **Force liquidation** at episode end (configurable)
+
+```python
+from src.envs.stub_env import StubExecutionEnv
+
+env = StubExecutionEnv(T=20, Q0=1000, seed=42)
+obs, info = env.reset()
+for _ in range(20):
+    obs, reward, done, _, info = env.step(env.action_space.sample())
+```
+
+### 3.2 Training
+
+All training scripts default to the toy `ExecutionEnv` (no `--use-abides` flag needed).
+
+```bash
+# DQN on ExecutionEnv (light LOB)
+python src/train_dqn.py --episodes 500 --save-model
+
+# Double DQN
+python src/train_dqn.py --episodes 500 --save-model --algorithm double_dqn
+
+# Tabular Q-Learning on ExecutionEnv
+python src/train_tabular.py --episodes 3000
+
+# Quick tabular Q on StubExecutionEnv (fastest, for sanity checks)
+python src/run_stub.py --episodes 500
+```
+
+Key hyperparameters (see `--help` for full list):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--total-inventory` | 1000 | Shares to liquidate |
+| `--n-steps` | 60 | Trading steps per episode |
+| `--n-actions` | 5 | Discrete actions (0%, 25%, 50%, 75%, 100%) |
+| `--lr` | 3e-4 | Learning rate (DQN only) |
+| `--gamma` | 0.99 | Discount factor |
+| `--epsilon-start/end` | 1.0 / 0.05 | ε-greedy exploration schedule |
+| `--force-liquidation` | True | Force-sell remaining inventory at deadline |
+
+### 3.3 Evaluation
+
+```bash
+# Evaluate a trained DQN model
+python src/eval_dqn.py --model-path runs/<run>/policy_net.pt --episodes 200
+
+# Evaluate a trained tabular Q model
+python src/eval_tabular.py --model-path runs/<run>/q_table.npy --episodes 200
+```
+
+### 3.4 Baselines
+
+```bash
+# TWAP baseline (toy env)
+python src/baselines/twap.py --episodes 200
+
+# Other baselines
+python src/baselines/immediate.py --episodes 200
+python src/baselines/last_minute.py --episodes 200
+python src/baselines/random_guarded.py --episodes 200
+```
+
+### 3.5 Plotting
+
+```bash
+# Training curve (reward over episodes)
+python scripts/plot_training_curve.py --run-dir runs/<run>
+
+# Compare multiple strategies (DQN vs TWAP vs baselines)
+python scripts/plot_comparison.py --run-dirs runs/dqn_run runs/twap_run
+
+# Inventory trajectory over time
+python scripts/plot_inventory_paths.py --run-dir runs/<run>
+
+# Implementation shortfall distribution
+python scripts/plot_implementation_shortfall.py --run-dir runs/<run>
+```
+
+---
+
+## 4 · Key Concepts
 
 ### State Space ($s_t$)
 
@@ -272,21 +318,22 @@ $$P_t = P_{\text{mid}} \cdot \big(1 - \eta \cdot q_t - \gamma \cdot \text{Cumula
 - $\eta$ = temporary impact (default `2.5e-6`)
 - $\gamma$ = permanent impact (default `2.5e-7`)
 
+In the `StubExecutionEnv`, a simpler quadratic impact model is used: cost $= \kappa \cdot q^2$ (default $\kappa = 0.0002$).
+
 ### Reward Function
 
-The agent's objective is to minimize execution slippage relative to the benchmark price. At each step $t$, the reward is calculated as:
+The agent's objective is to minimize execution slippage. At each step $t$:
 
 $$r_t = -(P_{\text{exec}} - P_{\text{benchmark}}) \cdot q_t$$
 
 Where:
 * $P_{\text{exec}}$: The price at which the shares were filled.
 * $P_{\text{benchmark}}$: The target reference price (e.g., Arrival Price or VWAP).
-* $q_t$ : The quantity traded at step $t$.
+* $q_t$: The quantity traded at step $t$.
+
+In the `StubExecutionEnv`, the reward is simply $r_t = -\text{impact cost}$.
+
 ---
-
-## 6 · Implementing a DQN Agent
-
-Create a file (e.g. `agents/dqn.py`) with the following structure. The environment is already gymnasium-compatible, so the training loop is standard
 
 ## Team
 Mingyang Li, Haotian Cui, Ethan Cohen

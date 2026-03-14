@@ -9,8 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Allow running as either `python -m src.baselines.random_guarded` or
-# `python src/baselines/random_guarded.py`.
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -60,16 +58,12 @@ def _guarded_random_qty(
     if steps_left == 1:
         return float(remaining)
 
-    # Become more aggressive late in the episode.
     progress = float(step_idx + 1) / float(max(1, horizon))
     urgency = progress ** max(0.0, float(urgency_power))
 
-    # If spread is wide, be slightly less aggressive; if tight, slightly more.
     spread_norm = max(1e-3, float(spread_norm))
     spread_scale = float(np.clip(spread_norm ** (-float(spread_sensitivity)), 0.75, 1.25))
 
-    # Phase 1: genuinely random sizing on remaining inventory.
-    # rand_low/high are fractions of *remaining*.
     if steps_left > max(1, int(catchup_steps)):
         low_frac = float(np.clip(rand_low, 0.0, 1.0))
         high_frac = float(np.clip(rand_high + float(urgency_boost) * urgency, 0.0, 1.0))
@@ -79,7 +73,6 @@ def _guarded_random_qty(
         target = remaining * frac * spread_scale
         return float(np.clip(target, 0.0, remaining))
 
-    # Phase 2: randomized catch-up near deadline so completion is likely.
     catchup_qty = remaining / float(steps_left)
     jitter = float(rng.uniform(0.6, 1.8))
     raw_target = catchup_qty * jitter * spread_scale * (1.0 + 0.5 * urgency)
@@ -140,7 +133,7 @@ def run_random_guarded(args: argparse.Namespace) -> str:
 
             if hasattr(env, "step_with_qty"):
                 next_obs, reward, terminated, truncated, info = env.step_with_qty(int(round(target_qty)))
-                action = -1  # direct-quantity mode
+                action = -1
             else:
                 action = _closest_discrete_action(
                     remaining=remaining,
@@ -216,53 +209,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
-    parser.add_argument(
-        "--use-abides",
-        action="store_true",
-        help="Use AbidesReplayEnv (real ABIDES data) instead of the synthetic light LOB env.",
-    )
-    parser.add_argument(
-        "--npz-path",
-        type=str,
-        default="data/features.npz",
-        help="Path to features.npz produced by the feature extraction pipeline.",
-    )
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="test",
-        choices=["train", "test", "all"],
-        help="Train/test split of the data file (first 80%% or last 20%%). Default: test.",
-    )
-
-    # Smart-random controls.
-    parser.add_argument(
-        "--rand-low",
-        type=float,
-        default=0.02,
-        help="Lower bound random fraction of remaining inventory (early/mid episode).",
-    )
-    parser.add_argument(
-        "--rand-high",
-        type=float,
-        default=0.30,
-        help="Upper bound random fraction of remaining inventory (early/mid episode).",
-    )
-    parser.add_argument("--urgency-boost", type=float, default=0.6, help="Extra aggressiveness near deadline.")
-    parser.add_argument("--urgency-power", type=float, default=1.5, help="Curvature of urgency ramp.")
-    parser.add_argument(
-        "--spread-sensitivity",
-        type=float,
-        default=0.35,
-        help="How much to reduce size when spread is wide.",
-    )
-    parser.add_argument(
-        "--catchup-steps",
-        type=int,
-        default=6,
-        help="Number of final steps using randomized catch-up logic.",
-    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--use-abides", action="store_true")
+    parser.add_argument("--npz-path", type=str, default="data/features.npz")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"])
+    parser.add_argument("--rand-low", type=float, default=0.02)
+    parser.add_argument("--rand-high", type=float, default=0.30)
+    parser.add_argument("--urgency-boost", type=float, default=0.6)
+    parser.add_argument("--urgency-power", type=float, default=1.5)
+    parser.add_argument("--spread-sensitivity", type=float, default=0.35)
+    parser.add_argument("--catchup-steps", type=int, default=6)
     return parser.parse_args()
 
 

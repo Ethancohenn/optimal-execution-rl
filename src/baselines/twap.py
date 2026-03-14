@@ -7,7 +7,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Allow running as either `python -m src.baselines.twap` or `python src/baselines/twap.py`.
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -52,10 +51,9 @@ def run_twap(args: argparse.Namespace) -> str:
     run_dir = build_run_dir(args.base_run_dir, args.run_name, overwrite=args.overwrite)
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
-    action_fractions = DEFAULT_ACTION_SPEC.fractions  # e.g. [0.0, 0.25, 0.5, 0.75, 1.0]
+    action_fractions = DEFAULT_ACTION_SPEC.fractions
 
     def _twap_action(remaining: float, target_qty: float) -> int:
-        """Pick the discrete action whose qty is closest to target_qty."""
         if remaining <= 0:
             return 0
         qtys = [f * remaining for f in action_fractions]
@@ -68,16 +66,13 @@ def run_twap(args: argparse.Namespace) -> str:
         ep_reward = 0.0
         ep_is = 0.0
         step_idx = 0
-        remaining = float(args.Q0)         # track remaining for TWAP slice calc
-        target_qty = args.Q0 / args.T      # equal slice per step
+        remaining = float(args.Q0)
+        target_qty = args.Q0 / args.T
 
         while not done:
-            # Equal-slice TWAP: sell exactly target_qty shares each step.
-            # Envs with step_with_qty() use exact sizing; discrete envs fall back
-            # to the closest action.
             if hasattr(env, "step_with_qty"):
                 _, reward, terminated, truncated, info = env.step_with_qty(int(round(target_qty)))
-                action = -1   # not applicable for direct-qty mode
+                action = -1
             else:
                 action = _twap_action(remaining, target_qty)
                 _, reward, terminated, truncated, info = env.step(action)
@@ -86,11 +81,10 @@ def run_twap(args: argparse.Namespace) -> str:
             exec_price = float(info.get("exec_price", float("nan")))
             mid_price = float(info.get("mid_price", float("nan")))
             executed_qty = float(info.get("executed_qty", 0.0))
-            # step_is: use env-provided value if available, else derive from prices
             if "step_is" in info:
                 step_is = float(info["step_is"])
             elif executed_qty > 0 and not (
-                exec_price != exec_price or mid_price != mid_price  # nan-check
+                exec_price != exec_price or mid_price != mid_price
             ):
                 step_is = executed_qty * (mid_price - exec_price)
             else:
@@ -146,14 +140,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
-    # ── ABIDES replay ─────────────────────────────────────────────
-    parser.add_argument("--use-abides", action="store_true",
-                        help="Use AbidesReplayEnv (real ABIDES data) instead of the synthetic light LOB env.")
-    parser.add_argument("--npz-path", type=str, default="data/features.npz",
-                        help="Path to features.npz produced by the feature extraction pipeline.")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"],
-                        help="Train/test split of the data file (first 80%% or last 20%%). Default: test.")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--use-abides", action="store_true")
+    parser.add_argument("--npz-path", type=str, default="data/features.npz")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"])
     return parser.parse_args()
 
 
