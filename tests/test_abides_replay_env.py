@@ -132,6 +132,26 @@ def test_market_impact_reduces_exec_price(env):
     )
 
 
+def test_nonzero_action_trades_at_least_one_share_with_unit_inventory(npz_path):
+    env = AbidesReplayEnv(npz_path=npz_path, n_steps=20, total_inventory=1, n_actions=15)
+    env.reset(seed=7)
+    _, _, terminated, truncated, info = env.step(1)
+    assert not truncated
+    assert terminated
+    assert info["executed_qty"] == 1
+    assert info["inventory_remaining"] == 0
+
+
+def test_nonzero_action_liquidates_all_on_final_step(npz_path):
+    env = AbidesReplayEnv(npz_path=npz_path, n_steps=1, total_inventory=2, n_actions=15)
+    env.reset(seed=8)
+    _, _, terminated, truncated, info = env.step(1)
+    assert not truncated
+    assert terminated
+    assert info["executed_qty"] == 2
+    assert info["inventory_remaining"] == 0
+
+
 
 def test_info_keys(env):
     env.reset(seed=6)

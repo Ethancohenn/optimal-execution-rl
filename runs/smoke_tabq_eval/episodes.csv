@@ -1,0 +1,4 @@
+episode,episode_reward,episode_is,completed,mean_loss,epsilon,steps,strategy,is_twap
+0,-100834.4970703125,100834.4970703125,0,0.0,0.0,20,tabular_q_eval,0
+1,-100609.00268554688,100609.00268554688,0,0.0,0.0,20,tabular_q_eval,0
+2,-100808.00170898438,100808.00170898438,0,0.0,0.0,20,tabular_q_eval,0

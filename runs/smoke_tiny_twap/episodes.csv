@@ -1,0 +1,3 @@
+episode,episode_reward,episode_is,completed,steps,epsilon,strategy,is_twap
+0,-6.179864509726087,6.179864509726087,1,10,0.0,twap,1
+1,-6.767875213658954,6.767875213658954,1,10,0.0,twap,1

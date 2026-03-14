@@ -12,10 +12,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from execution_infra.abides_replay_env import AbidesReplayEnv
+from execution_infra.light_lob_env import LightLOBEnv
+from execution_infra.tiny_lob_env import TinyLOBEnv
 from src.common.actions import DEFAULT_ACTION_SPEC
 from src.common.logger import RunLogger
 from src.envs.stub_env import StubExecutionEnv
-from execution_infra.abides_replay_env import AbidesReplayEnv
 
 
 def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
@@ -39,20 +41,75 @@ def build_run_dir(base_dir: str, run_name: str | None, overwrite: bool) -> str:
     return run_dir
 
 
+def _resolve_env_name(args: argparse.Namespace) -> str:
+    return "abides" if args.use_abides else str(args.env)
+
+
 def run_twap(args: argparse.Namespace) -> str:
-    if args.use_abides:
+    env_name = _resolve_env_name(args)
+    if env_name == "abides":
         env = AbidesReplayEnv(
             npz_path=args.npz_path,
             n_steps=args.T,
             total_inventory=int(args.Q0),
             n_actions=len(DEFAULT_ACTION_SPEC.fractions),
+            eta=args.eta,
+            gamma_perm=args.gamma_perm,
+            lambda_penalty=args.lambda_penalty,
+            urgency_coef=args.urgency_coef,
             split=args.split,
         )
         print(f"[twap] Using AbidesReplayEnv  npz={args.npz_path} (split={args.split})")
-    else:
+    elif env_name == "stub":
         max_trade_size = args.Q0 / float(args.T)
         env = StubExecutionEnv(T=args.T, Q0=args.Q0, max_trade_size=max_trade_size, seed=args.seed)
         print("[twap] Using synthetic StubExecutionEnv")
+    elif env_name == "tiny":
+        env = TinyLOBEnv(
+            n_steps=args.T,
+            total_inventory=int(args.Q0),
+            n_actions=len(DEFAULT_ACTION_SPEC.fractions),
+            initial_price=args.initial_price,
+            tick_size=args.tick_size,
+            eta=args.eta,
+            gamma_perm=args.gamma_perm,
+            lambda_penalty=args.lambda_penalty,
+            urgency_coef=args.urgency_coef,
+            spread_mean=args.spread_mean,
+            spread_std=args.spread_std,
+            base_depth=args.light_base_depth,
+            signal_rho=args.light_signal_rho,
+            signal_noise=args.light_signal_noise,
+            drift_strength=args.light_drift_strength,
+            return_noise=args.light_return_noise,
+            depth_sensitivity=args.tiny_depth_sensitivity,
+            force_liquidation=args.tiny_force_liquidation,
+            terminal_impact_mult=args.tiny_terminal_impact_mult,
+            seed=args.seed,
+        )
+        print("[twap] Using TinyLOBEnv")
+    else:
+        env = LightLOBEnv(
+            n_steps=args.T,
+            total_inventory=int(args.Q0),
+            n_actions=len(DEFAULT_ACTION_SPEC.fractions),
+            initial_price=args.initial_price,
+            tick_size=args.tick_size,
+            eta=args.eta,
+            gamma_perm=args.gamma_perm,
+            lambda_penalty=args.lambda_penalty,
+            urgency_coef=args.urgency_coef,
+            spread_mean=args.spread_mean,
+            spread_std=args.spread_std,
+            base_depth=args.light_base_depth,
+            signal_rho=args.light_signal_rho,
+            signal_noise=args.light_signal_noise,
+            drift_strength=args.light_drift_strength,
+            return_noise=args.light_return_noise,
+            participation_impact=args.light_participation_impact,
+            seed=args.seed,
+        )
+        print("[twap] Using LightLOBEnv")
     run_dir = build_run_dir(args.base_run_dir, args.run_name, overwrite=args.overwrite)
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
@@ -72,16 +129,13 @@ def run_twap(args: argparse.Namespace) -> str:
         ep_reward = 0.0
         ep_is = 0.0
         step_idx = 0
-        remaining = float(args.Q0)         # track remaining for TWAP slice calc
-        target_qty = args.Q0 / args.T      # equal slice per step
+        remaining = float(args.Q0)
+        target_qty = args.Q0 / args.T
 
         while not done:
-            # Equal-slice TWAP: sell exactly target_qty shares each step.
-            # AbidesReplayEnv exposes step_with_qty() for this; StubExecutionEnv
-            # uses the closest discrete action.
             if hasattr(env, "step_with_qty"):
                 _, reward, terminated, truncated, info = env.step_with_qty(int(round(target_qty)))
-                action = -1   # not applicable for direct-qty mode
+                action = -1
             else:
                 action = _twap_action(remaining, target_qty)
                 _, reward, terminated, truncated, info = env.step(action)
@@ -90,15 +144,12 @@ def run_twap(args: argparse.Namespace) -> str:
             exec_price = float(info.get("exec_price", float("nan")))
             mid_price = float(info.get("mid_price", float("nan")))
             executed_qty = float(info.get("executed_qty", 0.0))
-            # step_is: use env-provided value if available, else derive from prices
-            if "step_is" in info:
-                step_is = float(info["step_is"])
-            elif executed_qty > 0 and not (
-                exec_price != exec_price or mid_price != mid_price  # nan-check
+            if executed_qty > 0 and not (
+                exec_price != exec_price or mid_price != mid_price
             ):
                 step_is = executed_qty * (mid_price - exec_price)
             else:
-                step_is = -float(reward)
+                step_is = 0.0
             ep_reward += float(reward)
             ep_is += step_is
 
@@ -122,7 +173,6 @@ def run_twap(args: argparse.Namespace) -> str:
                 }
             )
             step_idx += 1
-
 
         logger.log_episode(
             {
@@ -149,13 +199,49 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-run-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
-    # ── ABIDES replay ─────────────────────────────────────────────
-    parser.add_argument("--use-abides", action="store_true",
-                        help="Use AbidesReplayEnv (real ABIDES data) instead of StubExecutionEnv.")
-    parser.add_argument("--npz-path", type=str, default="data/features.npz",
-                        help="Path to features.npz produced by the feature extraction pipeline.")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"],
-                        help="Train/test split of the data file (first 80%% or last 20%%). Default: test.")
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="stub",
+        choices=["stub", "light", "tiny", "abides"],
+        help="Environment backend.",
+    )
+    parser.add_argument(
+        "--use-abides",
+        action="store_true",
+        help="Backward-compatible alias for --env abides.",
+    )
+    parser.add_argument("--npz-path", type=str, default="data/features.npz")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "test", "all"])
+    parser.add_argument("--initial-price", type=float, default=100.0)
+    parser.add_argument("--tick-size", type=float, default=0.01)
+    parser.add_argument("--spread-mean", type=float, default=0.05)
+    parser.add_argument("--spread-std", type=float, default=0.01)
+    parser.add_argument("--eta", type=float, default=2.5e-6)
+    parser.add_argument("--gamma-perm", type=float, default=2.5e-7)
+    parser.add_argument("--lambda-penalty", type=float, default=1.0)
+    parser.add_argument("--urgency-coef", type=float, default=0.0)
+    parser.add_argument("--light-base-depth", type=float, default=1500.0)
+    parser.add_argument("--light-signal-rho", type=float, default=0.85)
+    parser.add_argument("--light-signal-noise", type=float, default=0.12)
+    parser.add_argument("--light-drift-strength", type=float, default=0.0015)
+    parser.add_argument("--light-return-noise", type=float, default=0.0009)
+    parser.add_argument("--light-participation-impact", type=float, default=0.04)
+    parser.add_argument("--tiny-depth-sensitivity", type=float, default=0.55)
+    parser.add_argument("--tiny-terminal-impact-mult", type=float, default=2.5)
+    parser.add_argument(
+        "--tiny-force-liquidation",
+        dest="tiny_force_liquidation",
+        action="store_true",
+        help="Force terminal liquidation in TinyLOBEnv (default on).",
+    )
+    parser.add_argument(
+        "--tiny-no-force-liquidation",
+        dest="tiny_force_liquidation",
+        action="store_false",
+        help="Disable forced terminal liquidation in TinyLOBEnv.",
+    )
+    parser.set_defaults(tiny_force_liquidation=True)
     return parser.parse_args()
 
 

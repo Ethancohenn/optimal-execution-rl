@@ -126,7 +126,11 @@ def main() -> None:
             executed_qty = float(info.get("executed_qty", 0))
             exec_price   = float(info.get("exec_price",   float("nan")))
             mid_price    = float(info.get("mid_price",    float("nan")))
-            step_is      = executed_qty * (mid_price - exec_price) if executed_qty > 0 else 0.0
+            step_is = (
+                executed_qty * (mid_price - exec_price)
+                if (executed_qty > 0 and not (np.isnan(exec_price) or np.isnan(mid_price)))
+                else 0.0
+            )
 
             ep_reward += float(reward)
             ep_is     += step_is

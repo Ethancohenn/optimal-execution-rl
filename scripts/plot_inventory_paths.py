@@ -1,12 +1,20 @@
 """
-Plot mean inventory depletion paths for RL and TWAP on the same axes.
-Both curves are anchored to (t=0, Q0) and extended to the full horizon T.
+Plot mean inventory depletion paths for one or more runs on the same axes.
+Each curve is anchored to (t=0, Q0) and extended to the full horizon T.
 
-Usage
------
+Usage (multi-run)
+-----------------
   conda run -n cs234_rl python scripts/plot_inventory_paths.py \\
-      --rl-run-dir   runs/dqn_abides_final \\
-      --twap-run-dir runs/twap_abides_final \\
+      --run-dirs runs/dqn_eval runs/ddqn_eval runs/twap_eval \\
+      --labels DQN DDQN TWAP \\
+      --Q0 1000 --T 60 --eval-frac 1.0 \\
+      --out reports/figures/inventory_path_all.png
+
+Usage (legacy 2-run mode)
+-------------------------
+  conda run -n cs234_rl python scripts/plot_inventory_paths.py \\
+      --rl-run-dir runs/dqn_abides_final \\
+      --baseline-run-dir runs/twap_abides_final \\
       --Q0 1000 --T 60 \\
       --out reports/figures/inventory_path.png
 """
@@ -61,35 +69,82 @@ def _build_mean_path(traj: pd.DataFrame, Q0: float, T: int,
     return path
 
 
+def _build_run_specs(args: argparse.Namespace) -> list[tuple[str, str, float | None]]:
+    # New multi-run mode.
+    if args.run_dirs is not None:
+        if len(args.run_dirs) < 2:
+            raise ValueError("Provide at least two paths in --run-dirs for comparison.")
+        if args.labels is not None and len(args.labels) != len(args.run_dirs):
+            raise ValueError("--labels count must match --run-dirs count.")
+        labels = args.labels or [Path(d).name for d in args.run_dirs]
+        return [(d, lbl, args.eval_frac) for d, lbl in zip(args.run_dirs, labels)]
+
+    # Legacy 2-run mode.
+    baseline_run_dir = args.baseline_run_dir or args.twap_run_dir
+    if baseline_run_dir is None:
+        raise ValueError(
+            "Provide either --run-dirs (multi-run mode) or "
+            "--baseline-run-dir/--twap-run-dir (legacy mode)."
+        )
+    if args.rl_run_dir is None:
+        raise ValueError("In legacy mode, --rl-run-dir is required.")
+    return [
+        (args.rl_run_dir, args.rl_label, args.eval_frac),
+        (baseline_run_dir, args.baseline_label, None),
+    ]
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--rl-run-dir",   required=True)
-    p.add_argument("--twap-run-dir", required=True)
+    # Multi-run mode (recommended)
+    p.add_argument("--run-dirs", nargs="+", default=None,
+                   help="Run directories to overlay on one figure.")
+    p.add_argument("--labels", nargs="+", default=None,
+                   help="Display labels for --run-dirs (same count/order).")
+
+    # Legacy mode (backward compatibility)
+    p.add_argument("--rl-run-dir", default=None)
+    p.add_argument("--rl-label", default="DQN")
+    p.add_argument("--baseline-run-dir", default=None)
+    p.add_argument("--twap-run-dir", default=None, help="Backward-compatible alias for --baseline-run-dir")
+    p.add_argument("--baseline-label", default="Baseline")
+
     p.add_argument("--out",   default="reports/figures/inventory_path.png")
     p.add_argument("--Q0",  type=float, default=1000.0, help="Initial inventory")
     p.add_argument("--T",   type=int,   default=60,     help="Total time steps")
     p.add_argument("--eval-frac", type=float, default=0.2,
-                   help="Fraction of last DQN episodes used for mean path")
+                   help="Fraction of last episodes used per run in --run-dirs mode.")
     args = p.parse_args()
 
-    rl_traj   = load_trajectories(args.rl_run_dir)
-    twap_traj = load_trajectories(args.twap_run_dir)
-
-    rl_mean   = _build_mean_path(rl_traj,   args.Q0, args.T, eval_frac=args.eval_frac)
-    twap_mean = _build_mean_path(twap_traj, args.Q0, args.T)  # all episodes (deterministic)
+    run_specs = _build_run_specs(args)
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(rl_mean["t"],   rl_mean["remaining_inventory"],
-            color="#3A86FF", linewidth=2.5, label=f"DQN")
-    ax.plot(twap_mean["t"], twap_mean["remaining_inventory"],
-            color="#FF6B6B", linewidth=2.5, label="TWAP")
+    palette = list(plt.get_cmap("tab10").colors)
+    for idx, (run_dir, label, eval_frac) in enumerate(run_specs):
+        traj = load_trajectories(run_dir)
+        mean_path = _build_mean_path(traj, args.Q0, args.T, eval_frac=eval_frac)
+        color = palette[idx % len(palette)]
+        ax.plot(
+            mean_path["t"],
+            mean_path["remaining_inventory"],
+            color=color,
+            linewidth=2.2,
+            label=label,
+        )
 
     ax.set_xlim(0, args.T)
     ax.set_ylim(0, args.Q0 * 1.05)
     ax.set_xlabel("Step (t)", fontsize=12)
     ax.set_ylabel("Remaining Inventory", fontsize=12)
-    ax.set_title("Inventory Depletion: DQN vs TWAP", fontsize=13, fontweight="bold")
-    ax.legend(fontsize=10)
+    if len(run_specs) == 2 and args.run_dirs is None:
+        ax.set_title(
+            f"Inventory Depletion: {run_specs[0][1]} vs {run_specs[1][1]}",
+            fontsize=13,
+            fontweight="bold",
+        )
+    else:
+        ax.set_title("Inventory Depletion Comparison", fontsize=13, fontweight="bold")
+    ax.legend(fontsize=9)
 
     os.makedirs(Path(args.out).parent, exist_ok=True)
     fig.tight_layout()

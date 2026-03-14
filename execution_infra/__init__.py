@@ -16,6 +16,8 @@ from execution_infra.config import EnvConfig
 from execution_infra.market_sim import MarketSimulator, LOBSnapshot
 from execution_infra.execution_env import ExecutionEnv
 from execution_infra.abides_replay_env import AbidesReplayEnv
+from execution_infra.light_lob_env import LightLOBEnv
+from execution_infra.tiny_lob_env import TinyLOBEnv
 
 __all__ = [
     "EnvConfig",
@@ -23,4 +25,6 @@ __all__ = [
     "LOBSnapshot",
     "ExecutionEnv",
     "AbidesReplayEnv",
+    "LightLOBEnv",
+    "TinyLOBEnv",
 ]

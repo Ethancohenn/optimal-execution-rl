@@ -132,7 +132,11 @@ def extract_features(
     log_dir = Path(log_dir)
 
     # ── 1. Locate files ──────────────────────────────────────────
-    ex_path = log_dir / "EXCHANGE_AGENT.bz2"
+    exchange_candidates = [
+        log_dir / "EXCHANGE_AGENT.bz2",
+        log_dir / "ExchangeAgent.bz2",
+    ]
+    ex_path = next((p for p in exchange_candidates if p.exists()), exchange_candidates[0])
     fund_path = log_dir / f"fundamental_{cfg.symbol}.bz2"
 
     # Execution agent name may vary; find the first match

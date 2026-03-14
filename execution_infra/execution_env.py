@@ -110,6 +110,12 @@ class ExecutionEnv(gym.Env):
         # ── 1. map action → quantity ──────────────────────────────
         frac = self.cfg.action_fractions[action]
         quantity = int(np.round(frac * self.inventory))
+        # Ensure any non-wait action actually trades at least one share.
+        if action > 0 and self.inventory > 0 and quantity == 0:
+            quantity = 1
+        # At the deadline, any non-wait action liquidates all remaining shares.
+        if action > 0 and self.inventory > 0 and self.current_step == (self.cfg.n_steps - 1):
+            quantity = self.inventory
         # Clamp to available inventory
         quantity = min(quantity, self.inventory)
 

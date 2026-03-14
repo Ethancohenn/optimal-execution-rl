@@ -1,0 +1,9 @@
+{
+  "objective": "is_aligned",
+  "hold_penalty_coef": 0.01,
+  "leftover_penalty_coef": 0.01,
+  "eta": 2.5e-06,
+  "gamma_perm": 2.5e-07,
+  "lambda_penalty_env": 0.0,
+  "urgency_coef_env": 0.0
+}

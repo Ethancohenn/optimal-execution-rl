@@ -1,0 +1,3 @@
+episode,episode_reward,episode_is,episode_env_reward,episode_leftover_penalty,completed,mean_loss,epsilon,steps,strategy,is_twap
+0,-1620.109269142148,1620.109269142148,-1657.645890235898,0.0,1,0.0,1.0,3,dqn2_is_aligned,0
+1,-2514.587554931609,2514.587554931609,-2514.587554931609,0.0,1,0.0,1.0,1,dqn2_is_aligned,0
