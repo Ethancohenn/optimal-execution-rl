@@ -2,8 +2,9 @@
 End-to-end feature extraction pipeline.
 
 Reads ABIDES bz2 log files from a simulation run directory, computes
-features, aligns them on a uniform time grid, and saves the result as a
-``.npz`` file (or returns a DataFrame).
+features, aligns them on either a uniform time grid (e.g. 1s) or native
+event timestamps, and saves the result as a ``.npz`` file (or returns a
+DataFrame).
 
 CLI usage
 ---------
@@ -61,6 +62,7 @@ class FeatureConfig:
         Ticker symbol used in the simulation (e.g. ``"IBM"``).
     resample_freq : str
         Pandas offset alias for the time grid (default ``"1s"``).
+        Use ``"event"`` to keep native event timestamps.
     total_inventory : int
         Total shares the execution agent must liquidate.
     volatility_window : int
@@ -100,6 +102,8 @@ FEATURE_COLUMNS = [
     "benchmark_price",
 ]
 
+EVENT_FREQ_TOKENS = {"event", "none", "raw", "native", "ns", "nanosecond", "nanoseconds"}
+
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -126,13 +130,19 @@ def extract_features(
     df : pd.DataFrame
         The final feature DataFrame (DatetimeIndex, 17 columns).
     arrays : dict[str, np.ndarray]
-        ``{"features": ..., "feature_names": ..., "timestamps": ...}``
+        ``{"features": ..., "feature_names": ..., "timestamps": ..., "timestamps_ns": ...}``
     """
     cfg = config or FeatureConfig()
     log_dir = Path(log_dir)
 
     # ── 1. Locate files ──────────────────────────────────────────
-    ex_path = log_dir / "EXCHANGE_AGENT.bz2"
+    # ABIDES log naming varies across configs/versions.
+    ex_candidates = [
+        log_dir / "EXCHANGE_AGENT.bz2",
+        log_dir / "ExchangeAgent.bz2",
+        log_dir / "ExchangeAgent0.bz2",
+    ]
+    ex_path = next((p for p in ex_candidates if p.exists()), ex_candidates[0])
     fund_path = log_dir / f"fundamental_{cfg.symbol}.bz2"
 
     # Execution agent name may vary; find the first match
@@ -157,6 +167,8 @@ def extract_features(
         if fund_path.exists()
         else pd.Series(dtype=float, name="fundamental_value")
     )
+    if isinstance(fund_raw.index, pd.DatetimeIndex) and fund_raw.index.has_duplicates:
+        fund_raw = fund_raw.groupby(level=0).last().sort_index()
 
     if exec_path and exec_path.exists():
         exec_raw = load_execution_agent(exec_path)
@@ -171,10 +183,36 @@ def extract_features(
 
     # Orderbook features → resample to uniform grid
     ob_feats = compute_orderbook_features(bba_df)
-    ob_resampled = ob_feats.resample(cfg.resample_freq).last().ffill()
+    freq_mode = str(cfg.resample_freq).lower()
+    use_event_grid = freq_mode in EVENT_FREQ_TOKENS
 
-    # Exchange features (internally resampled)
-    ex_feats = compute_exchange_features(trade_df, resample_freq=cfg.resample_freq)
+    if use_event_grid:
+        # Some ABIDES streams can emit multiple rows with identical timestamps.
+        # Collapse to one row per timestamp so reindex(..., method="ffill") is valid.
+        ob_event = ob_feats.groupby(level=0).last().sort_index()
+
+        # Event grid: sorted union of all available event timestamps.
+        idx_parts: list[pd.DatetimeIndex] = []
+        for idx in (ob_event.index, trade_df.index, exec_raw.index, fund_raw.index):
+            if isinstance(idx, pd.DatetimeIndex) and len(idx) > 0:
+                idx_parts.append(idx)
+        if not idx_parts:
+            raise ValueError("No timestamps found in logs; cannot build event-level feature grid.")
+
+        event_index = idx_parts[0]
+        for idx in idx_parts[1:]:
+            event_index = event_index.union(idx)
+        event_index = event_index.sort_values().unique()
+        ob_grid = ob_event.reindex(event_index, method="ffill")
+    else:
+        # Uniform time grid (default 1s).
+        ob_grid = ob_feats.resample(cfg.resample_freq).last().ffill()
+
+    # Exchange features (event-level or internally resampled)
+    ex_feats = compute_exchange_features(
+        trade_df,
+        resample_freq=None if use_event_grid else cfg.resample_freq,
+    )
 
     # Market open / close from the data
     mkt_open = bba_df.index.min()
@@ -187,10 +225,11 @@ def extract_features(
         mkt_open=mkt_open,
         mkt_close=mkt_close,
         resample_freq=cfg.resample_freq,
+        time_index=ob_grid.index if use_event_grid else None,
     )
 
     # ── 5. Merge on time grid ─────────────────────────────────────
-    merged = ob_resampled.copy()
+    merged = ob_grid.copy()
 
     # Join exchange features
     if not ex_feats.empty:
@@ -228,13 +267,16 @@ def extract_features(
 
     # ── 8. Build numpy arrays ─────────────────────────────────────
     feature_names = np.array(df.columns.tolist())
-    timestamps = np.array(df.index.strftime("%Y-%m-%d %H:%M:%S.%f"))
+    # Preserve native precision (including ns) in both string and integer forms.
+    timestamps = df.index.astype("datetime64[ns]").astype(str).to_numpy()
+    timestamps_ns = df.index.astype("datetime64[ns]").astype("int64").to_numpy()
     features = df.values.astype(np.float32)
 
     arrays = {
         "features": features,
         "feature_names": feature_names,
         "timestamps": timestamps,
+        "timestamps_ns": timestamps_ns,
     }
 
     # ── 9. Optionally save ────────────────────────────────────────
@@ -265,7 +307,11 @@ Example:
     )
     parser.add_argument("--log-dir", required=True, help="Path to ABIDES log directory")
     parser.add_argument("--symbol", default="IBM", help="Ticker symbol (default: IBM)")
-    parser.add_argument("--freq", default="1s", help="Resample frequency (default: 1s)")
+    parser.add_argument(
+        "--freq",
+        default="1s",
+        help="Resample frequency (default: 1s). Use 'event' to keep native timestamps.",
+    )
     parser.add_argument("--total-inventory", type=int, default=1_200_000,
                         help="Execution agent total inventory")
     parser.add_argument("--output", default=None, help="Output path for .npz file")

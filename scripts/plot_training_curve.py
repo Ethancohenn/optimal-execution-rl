@@ -6,12 +6,34 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.metrics.metrics import load_episodes, load_trajectories, reward_by_episode
+
+
+def _pretty_strategy_name(raw_name: str) -> str:
+    mapping = {
+        "dqn": "DQN",
+        "dqn_eval": "DQN",
+        "double_dqn": "Double DQN",
+        "double_dqn_eval": "Double DQN",
+        "tabular_q": "Tabular Q",
+        "tabular_q_eval": "Tabular Q",
+        "twap": "TWAP",
+        "immediate": "Immediate",
+        "last_minute": "Last Minute",
+    }
+    return mapping.get(raw_name, raw_name.replace("_", " ").title())
+
+
+def _infer_label(episodes_df: pd.DataFrame) -> str:
+    if "strategy" in episodes_df.columns and not episodes_df["strategy"].dropna().empty:
+        return _pretty_strategy_name(str(episodes_df["strategy"].dropna().iloc[0]))
+    return "RL"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +59,7 @@ def main() -> None:
     run_dir = Path(args.run_dir)
 
     episodes_df = load_episodes(run_dir)
+    strategy_label = _infer_label(episodes_df)
     if "episode_reward" in episodes_df.columns:
         rewards = episodes_df[["episode", "episode_reward"]].copy()
     else:
@@ -57,7 +80,7 @@ def main() -> None:
     plt.plot(rewards["episode"], rewards["reward_smooth"], linewidth=2.0, label=f"MA({smooth_window})")
     plt.xlabel("Episode")
     plt.ylabel("Total reward")
-    plt.title("Training Curve: Episode Reward vs Episode")
+    plt.title(f"{strategy_label} Training Curve: Episode Reward vs Episode")
     plt.legend()
     plt.grid(alpha=0.2)
     plt.tight_layout()

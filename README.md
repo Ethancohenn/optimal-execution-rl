@@ -193,15 +193,15 @@ The feature extraction pipeline converts raw ABIDES `.bz2` log files into a trai
 ```bash
 conda activate cs234_rl
 
+
+```
+
+### Python Usage
 python3 -m execution_infra.feature_extraction.pipeline \
     --log-dir abides/log/my_sim_run \
     --symbol IBM \
     --freq 1s \
     --output data/features.npz
-```
-
-### Python Usage
-
 ```python
 from execution_infra.feature_extraction import extract_features
 

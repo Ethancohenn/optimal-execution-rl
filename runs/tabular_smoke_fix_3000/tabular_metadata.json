@@ -1,0 +1,82 @@
+{
+  "env": "light_lob",
+  "state_bins": [
+    12,
+    12,
+    2,
+    2,
+    2,
+    2
+  ],
+  "discretizer": {
+    "bins": [
+      12,
+      12,
+      2,
+      2,
+      2,
+      2
+    ],
+    "lows": [
+      0.0,
+      0.0,
+      0.0,
+      -1.0,
+      -1.0,
+      0.0
+    ],
+    "highs": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "args": {
+    "episodes": 3000,
+    "seed": 7,
+    "total_inventory": 1000,
+    "n_steps": 60,
+    "n_actions": 5,
+    "initial_price": 100.0,
+    "tick_size": 0.01,
+    "spread_mean": 0.05,
+    "spread_std": 0.01,
+    "lob_depth_mean": 500,
+    "lob_depth_std": 100,
+    "n_lob_levels": 5,
+    "depth_decay": 0.35,
+    "obs_depth_levels": 3,
+    "market_lot_size": 25,
+    "market_order_intensity": 2.0,
+    "limit_order_intensity": 1.2,
+    "cancellation_rate": 0.04,
+    "quote_improve_prob": 0.15,
+    "volatility": 0.02,
+    "fundamental_mean_reversion": 0.1,
+    "order_flow_memory": 0.25,
+    "agent_permanent_impact": 1.5,
+    "force_liquidation": true,
+    "alpha": 0.1,
+    "gamma": 0.99,
+    "epsilon_start": 1.0,
+    "epsilon_end": 0.05,
+    "epsilon_decay_steps": 20000,
+    "state_bins": [
+      12,
+      12,
+      2,
+      2,
+      2,
+      2
+    ],
+    "base_run_dir": "runs",
+    "run_name": "tabular_smoke_fix_3000",
+    "overwrite": true,
+    "use_abides": false,
+    "npz_path": "data/features.npz",
+    "split": "train"
+  }
+}
