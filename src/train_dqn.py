@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import shutil
@@ -17,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from execution_infra import EnvConfig, ExecutionEnv
+from execution_infra.abides_replay_env import AbidesReplayEnv
 from src.agents.dqn import DQNAgent
 from src.common.logger import RunLogger
 
@@ -41,9 +43,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eta", type=float, default=2.5e-6)
     parser.add_argument("--gamma-perm", type=float, default=2.5e-7)
     parser.add_argument("--lambda-penalty", type=float, default=1.0)
+    parser.add_argument("--urgency-coef", type=float, default=50.0)
 
     parser.add_argument("--hidden-dims", nargs="+", type=int, default=[128, 128])
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
@@ -52,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-capacity", type=int, default=100_000)
     parser.add_argument("--warmup-steps", type=int, default=1_000)
     parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN target computation (default off).")
-    parser.add_argument("--smoothness-coef", type=float, default=0.0)
+    parser.add_argument("--smoothness-coef", type=float, default=0.01)
     parser.add_argument("--target-update-interval", type=int, default=50)
     parser.add_argument("--tau", type=float, default=0.05)
 
@@ -60,6 +63,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true", help="Delete existing run directory before writing.")
     parser.add_argument("--save-model", action="store_true", help="Save policy network to run_dir/policy_net.pt")
+
+    # ── ABIDES replay ─────────────────────────────────────────────
+    parser.add_argument("--use-abides", action="store_true",
+                        help="Use AbidesReplayEnv (real ABIDES data) instead of synthetic ExecutionEnv.")
+    parser.add_argument("--npz-path", type=str, default="data/features.npz",
+                        help="Path to features.npz produced by the feature extraction pipeline.")
+    parser.add_argument("--split", type=str, default="train", choices=["train", "test", "all"],
+                        help="Train/test split of the data file (first 80%% or last 20%%). Default: train.")
     return parser.parse_args()
 
 
@@ -95,24 +106,42 @@ def set_global_seed(seed: int) -> None:
 def train(args: argparse.Namespace) -> str:
     set_global_seed(args.seed)
 
-    cfg = EnvConfig(
-        total_inventory=args.total_inventory,
-        n_steps=args.n_steps,
-        n_actions=args.n_actions,
-        initial_price=args.initial_price,
-        tick_size=args.tick_size,
-        volatility=args.volatility,
-        spread_mean=args.spread_mean,
-        spread_std=args.spread_std,
-        lob_depth_mean=args.lob_depth_mean,
-        lob_depth_std=args.lob_depth_std,
-        n_lob_levels=args.n_lob_levels,
-        eta=args.eta,
-        gamma_perm=args.gamma_perm,
-        lambda_penalty=args.lambda_penalty,
-        seed=args.seed,
-    )
-    env = ExecutionEnv(config=cfg)
+    # ── Build environment ─────────────────────────────────────────
+    if args.use_abides:
+        env = AbidesReplayEnv(
+            npz_path=args.npz_path,
+            n_steps=args.n_steps,
+            total_inventory=args.total_inventory,
+            n_actions=args.n_actions,
+            eta=args.eta,
+            gamma_perm=args.gamma_perm,
+            lambda_penalty=args.lambda_penalty,
+            urgency_coef=args.urgency_coef,
+            split=args.split,
+        )
+        print(f"[train_dqn] Using AbidesReplayEnv  npz={args.npz_path} (split={args.split})")
+        # Save normalisation stats for later use during eval on held-out data
+        _norm_stats = {"mean_spread": env._mean_spread, "mean_bid_vol": env._mean_bid_vol}
+    else:
+        cfg = EnvConfig(
+            total_inventory=args.total_inventory,
+            n_steps=args.n_steps,
+            n_actions=args.n_actions,
+            initial_price=args.initial_price,
+            tick_size=args.tick_size,
+            volatility=args.volatility,
+            spread_mean=args.spread_mean,
+            spread_std=args.spread_std,
+            lob_depth_mean=args.lob_depth_mean,
+            lob_depth_std=args.lob_depth_std,
+            n_lob_levels=args.n_lob_levels,
+            eta=args.eta,
+            gamma_perm=args.gamma_perm,
+            lambda_penalty=args.lambda_penalty,
+            seed=args.seed,
+        )
+        env = ExecutionEnv(config=cfg)
+        print(f"[train_dqn] Using synthetic ExecutionEnv")
     state_dim = int(env.observation_space.shape[0])
     action_dim = int(env.action_space.n)
 
@@ -137,7 +166,7 @@ def train(args: argparse.Namespace) -> str:
     logger = RunLogger(run_dir=run_dir, episodes_path="", traj_path="")
 
     for episode in trange(args.episodes, desc="train"):
-        state, _ = env.reset(seed=args.seed + episode)
+        state, info = env.reset(seed=args.seed + episode)
         done = False
         ep_reward = 0.0
         ep_is = 0.0
@@ -147,7 +176,7 @@ def train(args: argparse.Namespace) -> str:
         step_idx = 0
 
         while not done:
-            inventory_before = int(env.inventory)
+            inventory_before = int(info["inventory_remaining"])
             action = agent.select_action(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
@@ -158,14 +187,12 @@ def train(args: argparse.Namespace) -> str:
                 ep_loss += metrics["loss"]
                 loss_count += 1
 
-            frac = env.cfg.action_fractions[action]
-            executed_qty = min(int(np.round(frac * inventory_before)), inventory_before)
+            executed_qty = int(info.get("executed_qty", 0))
             step_is = -float(reward)
             ep_is += step_is
 
-            exec_price = float("nan")
-            if executed_qty > 0 and env.trades and int(env.trades[-1]["step"]) == int(info["step"]):
-                exec_price = float(env.trades[-1]["exec_price"])
+            exec_price = float(info.get("exec_price", float("nan")))
+            mid_price = float(info.get("mid_price", float("nan")))
 
             logger.log_step(
                 {
@@ -175,7 +202,7 @@ def train(args: argparse.Namespace) -> str:
                     "remaining_inventory": float(info["inventory_remaining"]),
                     "action": int(action),
                     "exec_price": exec_price,
-                    "mid_price": float(env.market.mid_price),
+                    "mid_price": mid_price,
                     "reward": float(reward),
                     "is_twap": 0,
                     "executed_qty": float(executed_qty),
@@ -188,6 +215,7 @@ def train(args: argparse.Namespace) -> str:
             prev_action = int(action)
             state = next_state
             step_idx += 1
+
 
         logger.log_episode(
             {
@@ -205,6 +233,9 @@ def train(args: argparse.Namespace) -> str:
     if args.save_model:
         model_path = os.path.join(run_dir, "policy_net.pt")
         torch.save(agent.policy_net.state_dict(), model_path)
+        if args.use_abides:
+            with open(os.path.join(run_dir, "norm_stats.json"), "w") as f:
+                json.dump(_norm_stats, f, indent=2)
 
     return run_dir
 
