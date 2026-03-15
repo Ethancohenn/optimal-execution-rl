@@ -286,52 +286,6 @@ python scripts/plot_inventory_paths.py --run-dir runs/<run>
 python scripts/plot_implementation_shortfall.py --run-dir runs/<run>
 ```
 
----
-
-## 4 · Key Concepts
-
-### State Space ($s_t$)
-
-| Index | Feature | Range | Description |
-|-------|---------|-------|-------------|
-| 0 | Inventory remaining | [0, 1] | Normalised: current / initial |
-| 1 | Time remaining | [1 → 0] | Normalised: 1 at start, 0 at deadline |
-| 2 | Spread | [0, ∞) | Best ask − best bid ($) |
-| 3 | LOB volume | [0, 1] | Normalised sum of top-3 bid+ask depth |
-
-### Action Space
-
-| Action | Fraction sold |
-|--------|--------------|
-| 0 | 0% (wait) |
-| 1 | 25% of remaining |
-| 2 | 50% of remaining |
-| 3 | 75% of remaining |
-| 4 | 100% of remaining |
-
-### Market Impact
-
-When the agent sells $q$ shares:
-
-$$P_t = P_{\text{mid}} \cdot \big(1 - \eta \cdot q_t - \gamma \cdot \text{CumulativeVol}\big)$$
-
-- $\eta$ = temporary impact (default `2.5e-6`)
-- $\gamma$ = permanent impact (default `2.5e-7`)
-
-In the `StubExecutionEnv`, a simpler quadratic impact model is used: cost $= \kappa \cdot q^2$ (default $\kappa = 0.0002$).
-
-### Reward Function
-
-The agent's objective is to minimize execution slippage. At each step $t$:
-
-$$r_t = -(P_{\text{exec}} - P_{\text{benchmark}}) \cdot q_t$$
-
-Where:
-* $P_{\text{exec}}$: The price at which the shares were filled.
-* $P_{\text{benchmark}}$: The target reference price (e.g., Arrival Price or VWAP).
-* $q_t$: The quantity traded at step $t$.
-
-In the `StubExecutionEnv`, the reward is simply $r_t = -\text{impact cost}$.
 
 ---
 
